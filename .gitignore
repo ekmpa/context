@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated local split data and init locks
+data/*/train/
+data/*/val/
+data/*/test/
+data/metadata.json
+data/.initialize_run_assets.lock
+.initialize_run_assets.lock
+
+# Local run artifacts
+logs/
+eval/
+eval_results/
+oldlogs/
+shards/
