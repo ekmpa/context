@@ -1,13 +1,11 @@
-#!/usr/bin/env python3
-
 import argparse
+from collections import Counter
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
-from glob import glob
-from hashlib import md5
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +15,111 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 LOCAL_CORE_DIR = SCRIPTS_DIR / "context_core"
 DEFAULT_STRUCTURAL_SHARDS_DIR = "/network/scratch/k/kondrupe/credibench-neighbors_serving_shards"
 DATA_STATS_DIR = ROOT_DIR / "data_stats"
-EVAL_REPORTS_DIR = ROOT_DIR / "eval"
+MODEL_BACKEND_PREFIX_MAP: dict[str, tuple[str, ...]] = {
+    # Extend here as new model families are added.
+    "hf-local": ("qwen", "llama"),
+    "openai": ("gpt", "o1", "o3", "o4", "text-"),
+}
+CLAIM_COUNTER_KEYS = (
+    "numFalseClaims",
+    "numMixedClaims",
+    "numTrueClaims",
+    "numUndefinedClaims",
+)
+
+TRUE_LABEL_ALIASES = {
+    "true",
+    "supported",
+    "support",
+    "supports",
+    "entailment",
+    "entails",
+    "factual",
+    "real",
+    "correct",
+    "accurate",
+    "verified",
+    "yes",
+    "mostly-true",
+    "mostly true",
+    "half-true",
+    "half true",
+}
+
+FALSE_LABEL_ALIASES = {
+    "false",
+    "refuted",
+    "refute",
+    "refutes",
+    "contradiction",
+    "contradict",
+    "contradicts",
+    "fake",
+    "incorrect",
+    "inaccurate",
+    "pants-fire",
+    "pants fire",
+    "pants-on-fire",
+    "barely-true",
+    "barely true",
+    "no",
+}
+
+UNVERIFIED_LABEL_ALIASES = {
+    "unverified",
+    "unverifiable",
+    "undefined",
+    "unknown",
+    "uncertain",
+    "not enough info",
+    "not enough information",
+    "nei",
+    "neutral",
+    "ambiguous",
+    "irrelevant",
+    "mixed",
+    "mixture",
+    "partly true",
+    "partly false",
+    "misleading",
+}
+
+COMPACT_LABEL_MAP = {
+    "notenoughinfo": "unverified",
+    "pantsonfire": "false",
+    "mostlytrue": "true",
+    "halftrue": "true",
+    "barelytrue": "false",
+}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _condition_hyperparameter_defaults(condition: str) -> tuple[int, int]:
+    if condition in {"structural", "third-party", "raw"}:
+        return 5, 5
+    return 5, 5
+
+
+def _resolve_runtime_hyperparameters(
+    *,
+    condition: str,
+    num_rounds_qgen: int | None,
+    max_evidences_per_question: int | None,
+) -> tuple[int, int]:
+    default_rounds, default_evidences = _condition_hyperparameter_defaults(condition)
+    resolved_rounds = num_rounds_qgen
+    if resolved_rounds is None:
+        resolved_rounds = _env_int("RARR_NUM_ROUNDS_QGEN", default_rounds)
+    resolved_evidences = max_evidences_per_question
+    if resolved_evidences is None:
+        resolved_evidences = _env_int("RARR_MAX_EVIDENCES_PER_QUESTION", default_evidences)
+    return max(1, int(resolved_rounds)), max(1, int(resolved_evidences))
 
 
 def _python_path_setup() -> None:
@@ -31,23 +133,68 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("dataset_path", nargs="?", help="Path to local dataset (.csv or .jsonl)")
     parser.add_argument("run_id", nargs="?", help="Run ID (default: timestamp-based)")
-    parser.add_argument("max_rows", nargs="?", type=int, default=50, help="Max rows to evaluate")
+    parser.add_argument("max_rows", nargs="?", type=int, default=None, help="Max rows to evaluate")
+    parser.add_argument(
+        "--max-rows",
+        dest="max_rows_flag",
+        type=int,
+        default=None,
+        help="Max rows to evaluate (named flag, preferred for scripting)",
+    )
 
+    parser.add_argument(
+        "--condition",
+        choices=["raw", "structural", "third-party"],
+        default=os.getenv("RARR_CONDITION", "raw"),
+        help="Run mode: raw (web only), structural (web + graph context), or third-party (web + domain ratings)",
+    )
     parser.add_argument("--structural", action="store_true", help="Enable structural graph context")
     parser.add_argument(
         "--structural-shards-dir",
         default=os.getenv("RARR_STRUCTURAL_SHARDS_DIR", DEFAULT_STRUCTURAL_SHARDS_DIR),
-        help="Directory containing hook serving shards",
+        help="Directory with structural serving shards",
     )
-    parser.add_argument("--show-prompts", action="store_true", help="Print active RARR prompts and exit")
+    parser.add_argument(
+        "--third-party-ratings-file",
+        default=os.getenv("RARR_THIRD_PARTY_RATINGS_FILE", str((ROOT_DIR / "data" / "domain_ratings.csv").resolve())),
+        help="CSV file with domain trust scores for third-party mode",
+    )
+    parser.add_argument("--show-prompts", action="store_true", help="Show the active RARR prompts and exit")
 
-    parser.add_argument("--hf-dataset", default="", help="HF dataset repo, e.g. ComplexDataLab/Misinfo_Datasets")
-    parser.add_argument("--hf-config", default="default", help="HF dataset config")
-    parser.add_argument("--hf-split", default="train", help="HF split")
-    parser.add_argument("--hf-claim-col", default="claim", help="Claim column for HF mode")
-    parser.add_argument("--hf-label-col", default="label", help="Ground-truth label column for HF mode")
-    parser.add_argument("--factcheck-model", default="", help="Override the fact-check claim processor model")
-    parser.add_argument("--rarr-model", default="", help="Override the RARR retriever/verifier model")
+    parser.add_argument("--hf-dataset", default="", help="Hugging Face dataset, for example ComplexDataLab/Misinfo_Datasets")
+    parser.add_argument("--hf-config", default="default", help="Hugging Face dataset config")
+    parser.add_argument("--hf-split", default="train", help="Hugging Face split")
+    parser.add_argument("--hf-claim-col", default="claim", help="Claim column for Hugging Face runs")
+    parser.add_argument("--hf-label-col", default="label", help="Label column for Hugging Face runs")
+    parser.add_argument(
+        "--hf-origin-col",
+        default="dataset",
+        help="Column that stores the original source dataset name",
+    )
+    parser.add_argument(
+        "--hf-origin-value",
+        default="",
+        help="Keep only rows with one origin value from --hf-origin-col",
+    )
+    parser.add_argument(
+        "--hf-list-origin-values",
+        action="store_true",
+        help="List row counts by origin value and exit",
+    )
+    parser.add_argument("--factcheck-model", default="", help="Override the claim-processing model")
+    parser.add_argument("--rarr-model", default="", help="Override the retriever/verifier model")
+    parser.add_argument(
+        "--num-rounds-qgen",
+        type=int,
+        default=None,
+        help="How many question-generation rounds to run. Default: env override, else 5.",
+    )
+    parser.add_argument(
+        "--max-evidences-per-question",
+        type=int,
+        default=None,
+        help="How many evidence snippets to pass to the verifier per claim. Default: env override, else 5.",
+    )
 
     return parser.parse_args()
 
@@ -64,33 +211,86 @@ def _show_prompts() -> None:
 
 def _validate_runtime(args: argparse.Namespace) -> None:
     if not LOCAL_CORE_DIR.exists():
-        raise FileNotFoundError(f"Local vendored core directory not found at {LOCAL_CORE_DIR}")
+        raise FileNotFoundError(f"Couldn't find the local core package at {LOCAL_CORE_DIR}")
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required")
+    backend = os.getenv("CONTEXT_LLM_BACKEND", "openai").strip().lower()
+    if backend == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError("Set OPENAI_API_KEY to use the OpenAI backend")
+    elif backend not in {"hf-local", "hf_local", "local"}:
+        raise RuntimeError(
+            f"Unsupported CONTEXT_LLM_BACKEND={backend}. Use 'openai' or 'hf-local'."
+        )
 
     provider = os.getenv("RARR_SEARCH_PROVIDER", "serper").strip().lower()
     if provider == "serper" and not os.getenv("SERPER_API_KEY"):
-        raise RuntimeError("RARR_SEARCH_PROVIDER=serper requires SERPER_API_KEY")
+        raise RuntimeError("Set SERPER_API_KEY to use the Serper search provider")
     if provider not in {"auto", "serper", "duckduckgo"}:
         raise RuntimeError(
-            f"Unsupported RARR_SEARCH_PROVIDER={provider}. Use one of: auto, serper, duckduckgo"
+            f"Unsupported RARR_SEARCH_PROVIDER={provider}. Use 'auto', 'serper', or 'duckduckgo'."
         )
 
-    if args.structural:
+    condition = _resolve_condition(args)
+
+    if condition == "structural":
         shards_dir = Path(args.structural_shards_dir)
         if not shards_dir.is_dir():
             raise RuntimeError(
-                f"Structural mode requested, but serving shards directory not found: {shards_dir}"
+                f"Structural mode needs a serving shards directory, but none was found at {shards_dir}"
             )
         if not (shards_dir / "_meta.json").exists():
             print(
-                f"Warning: {(shards_dir / '_meta.json')} is missing; shard count defaults may be used."
+                f"Warning: {(shards_dir / '_meta.json')} is missing, so shard defaults may be used."
             )
         os.environ["RARR_STRUCTURAL_MODE"] = "1"
         os.environ["RARR_STRUCTURAL_SHARDS_DIR"] = str(shards_dir)
         os.environ.setdefault("RARR_STRUCTURAL_HOOK_PATH", str((ROOT_DIR / "scripts" / "hook.py").resolve()))
-        print(f"Structural mode enabled (shards: {shards_dir})")
+        print(f"Structural mode is on (shards: {shards_dir})")
+
+    if condition == "third-party":
+        ratings_path = Path(args.third_party_ratings_file)
+        if not ratings_path.is_file():
+            raise RuntimeError(
+                f"Third-party mode needs a ratings file, but none was found at {ratings_path}"
+            )
+
+
+def _infer_backend_from_model(model_name: str) -> str:
+    lower_name = (model_name or "").strip().lower()
+    for backend, prefixes in MODEL_BACKEND_PREFIX_MAP.items():
+        if any(lower_name.startswith(prefix) for prefix in prefixes):
+            return backend
+    return "openai"
+
+
+def _configure_backend_environment(args: argparse.Namespace) -> str:
+    # rarr_model can come from CLI, env, or fall back to default config behavior.
+    chosen_model = (
+        (args.rarr_model or "").strip()
+        or os.getenv("RARR_MODEL", "").strip()
+        or "gpt-3.5-turbo-instruct"
+    )
+    inferred_backend = _infer_backend_from_model(chosen_model)
+    os.environ["CONTEXT_LLM_BACKEND"] = inferred_backend
+    return inferred_backend
+
+
+def _resolve_condition(args: argparse.Namespace) -> str:
+    # Backward compatibility: --structural forces structural mode.
+    if getattr(args, "structural", False):
+        return "structural"
+    condition = getattr(args, "condition", "raw")
+    return condition
+
+
+def _configure_condition_environment(args: argparse.Namespace) -> str:
+    condition = _resolve_condition(args)
+    os.environ["RARR_CONDITION"] = condition
+    os.environ["RARR_STRUCTURAL_MODE"] = "1" if condition == "structural" else "0"
+    os.environ["RARR_THIRD_PARTY_MODE"] = "1" if condition == "third-party" else "0"
+    if condition == "third-party":
+        os.environ["RARR_THIRD_PARTY_RATINGS_FILE"] = str(Path(args.third_party_ratings_file).resolve())
+    return condition
 
 
 def _load_local_dataset(path: str) -> pd.DataFrame:
@@ -99,51 +299,128 @@ def _load_local_dataset(path: str) -> pd.DataFrame:
         return pd.read_csv(path)
     if lower.endswith(".jsonl"):
         return pd.read_json(path, lines=True)
-    raise ValueError("Only .csv and .jsonl are supported")
+    raise ValueError("Use a .csv or .jsonl dataset file")
+
+
+def _hf_import():
+    try:
+        from datasets import load_dataset
+        return load_dataset
+    except ImportError as exc:
+        raise RuntimeError(
+            "The 'datasets' package is required. Install it in ctxt-env with: uv pip install datasets"
+        ) from exc
 
 
 def _load_hf_dataset(repo: str, config: str, split: str) -> pd.DataFrame:
-    try:
-        from datasets import load_dataset
-    except ImportError as exc:
-        raise RuntimeError(
-            "The 'datasets' package is required for --hf-dataset mode. "
-            "Install it in ctxt-env, e.g. uv pip install datasets"
-        ) from exc
-
-    ds = load_dataset(repo, config, split=split)
-    return ds.to_pandas()
+    return _hf_import()(repo, config, split=split).to_pandas()
 
 
 def _load_hf_dataset_dict(repo: str, config: str):
-    try:
-        from datasets import load_dataset
-    except ImportError as exc:
-        raise RuntimeError(
-            "The 'datasets' package is required for --hf-dataset mode. "
-            "Install it in ctxt-env, e.g. uv pip install datasets"
-        ) from exc
+    return _hf_import()(repo, config)
 
-    return load_dataset(repo, config)
+
+def _normalize_label_with_match(value: object) -> tuple[str, bool, str]:
+    if value is None:
+        return "unverified", True, "none"
+    if isinstance(value, bool):
+        return ("true" if value else "false"), True, "bool"
+    if isinstance(value, (int, float)):
+        if int(value) == 1:
+            return "true", True, "numeric"
+        if int(value) == 0:
+            return "false", True, "numeric"
+        return "unverified", False, "numeric"
+
+    low = str(value).strip().lower()
+    if low in TRUE_LABEL_ALIASES:
+        return "true", True, "direct"
+    if low in FALSE_LABEL_ALIASES:
+        return "false", True, "direct"
+    if low in UNVERIFIED_LABEL_ALIASES:
+        return "unverified", True, "direct"
+
+    token = re.sub(r"[^a-z]+", " ", low).strip()
+    if token in TRUE_LABEL_ALIASES:
+        return "true", True, "tokenized"
+    if token in FALSE_LABEL_ALIASES:
+        return "false", True, "tokenized"
+    if token in UNVERIFIED_LABEL_ALIASES:
+        return "unverified", True, "tokenized"
+
+    compact = token.replace(" ", "")
+    if compact in COMPACT_LABEL_MAP:
+        return COMPACT_LABEL_MAP[compact], True, "compact"
+    return "unverified", False, "fallback"
 
 
 def _normalize_label(value: object) -> str:
+    normalized, _, _ = _normalize_label_with_match(value)
+    return normalized
+
+
+def _build_label_audit(raw_labels: list[object], normalized_labels: list[str]) -> dict:
+    raw_counter: Counter[str] = Counter()
+    unknown_counter: Counter[str] = Counter()
+    normalized_counter: Counter[str] = Counter(normalized_labels)
+    matched_count = 0
+
+    for value in raw_labels:
+        raw_text = str(value).strip()
+        raw_display = raw_text if raw_text else "<empty>"
+        raw_counter[raw_display] += 1
+        _, matched, _ = _normalize_label_with_match(value)
+        if matched:
+            matched_count += 1
+        else:
+            unknown_counter[raw_display] += 1
+
+    rows_considered = len(raw_labels)
+    return {
+        "rows_considered": rows_considered,
+        "raw_unique": len(raw_counter),
+        "matched_count": matched_count,
+        "fallback_count": rows_considered - matched_count,
+        "normalized_counts": {
+            "true": int(normalized_counter.get("true", 0)),
+            "false": int(normalized_counter.get("false", 0)),
+            "unverified": int(normalized_counter.get("unverified", 0)),
+        },
+        "top_raw_labels": [
+            {"label": label, "count": count}
+            for label, count in raw_counter.most_common(10)
+        ],
+        "top_fallback_labels": [
+            {"label": label, "count": count}
+            for label, count in unknown_counter.most_common(10)
+        ],
+    }
+
+
+def _normalize_text_value(value: object) -> str | None:
     if value is None:
-        return "unverified"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        if int(value) == 1:
-            return "true"
-        if int(value) == 0:
-            return "false"
-        return "unverified"
-    low = str(value).strip().lower()
-    if low in {"true", "supported", "support", "factual", "real", "correct"}:
-        return "true"
-    if low in {"false", "refuted", "fake", "incorrect"}:
-        return "false"
-    return "unverified"
+        return None
+    text = str(value).strip()
+    if text.lower() in {"", "na", "none", "null", "nan"}:
+        return None
+    return text
+
+
+def _resolve_label_column(df: pd.DataFrame, preferred: str | None = None) -> str | None:
+    candidates = [
+        preferred,
+        "label",
+        "labels",
+        "veracity",
+        "verdict",
+        "gold_label",
+        "annotation",
+        "stance",
+    ]
+    for col in candidates:
+        if col and col in df.columns:
+            return col
+    return None
 
 
 def _infer_pred_label(payload: dict) -> str:
@@ -167,27 +444,6 @@ def _slugify(value: str) -> str:
     return slug.strip("-") or "unknown"
 
 
-def _read_latest_state(truth_output_dir: Path, sample_name: str) -> dict:
-    result_path = truth_output_dir / f"{sample_name}.jsonl"
-    if not result_path.exists():
-        return {}
-
-    latest = None
-    with open(result_path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                latest = json.loads(line)
-
-    if latest is None:
-        return {}
-    return latest.get("state", {})
-
-
-def _sample_name(dataset_name: str, index: int) -> str:
-    return f"dataset_na_{index}"
-
-
 def _normalize_decision_label(label: object) -> str:
     if not isinstance(label, str):
         return "ambiguous"
@@ -197,7 +453,7 @@ def _normalize_decision_label(label: object) -> str:
         return "true"
     if low in {"disagrees", "false", "refutes", "refute", "contradicts", "contradict"}:
         return "false"
-    if low == "unverifiable":
+    if low in {"unverifiable", "unverified", "undefined"}:
         return "unverifiable"
     if low in {"ambiguous", "irrelevant", "unknown"}:
         return "ambiguous"
@@ -235,43 +491,99 @@ def _infer_prediction_bucket_from_state(state: dict) -> str:
     return "ambiguous"
 
 
-def _collect_prediction_buckets(output_dir: Path, total_rows: int, dataset_name: str) -> dict[int, str]:
-    truth_dir = output_dir / "truth"
-    pred_by_idx: dict[int, str] = {}
-    for idx in range(total_rows):
-        state = _read_latest_state(truth_dir, _sample_name(dataset_name, idx))
-        if state:
-            pred_by_idx[idx] = _infer_prediction_bucket_from_state(state)
-    return pred_by_idx
+def _annotate_eval_entries(entries: list[dict]) -> tuple[dict[int, str], dict[int, str]]:
+    pred_labels: dict[int, str] = {}
+    pred_buckets: dict[int, str] = {}
+    for idx, entry in enumerate(entries):
+        payload = {
+            "claims": entry.get("claims", {}) or {},
+            "result": entry.get("result"),
+        }
+        pred_label = _infer_pred_label(payload)
+        pred_bucket = _infer_prediction_bucket_from_state({"detail": entry.get("detail", [])})
+        entry["pred_label"] = pred_label
+        entry["pred_bucket"] = pred_bucket
+        pred_labels[idx] = pred_label
+        pred_buckets[idx] = pred_bucket
+    return pred_labels, pred_buckets
+
+
+def _aggregate_claim_counters(entries: list[dict]) -> dict[str, int]:
+    totals = {key: 0 for key in CLAIM_COUNTER_KEYS}
+    for entry in entries:
+        claims = entry.get("claims") if isinstance(entry, dict) else None
+        if not isinstance(claims, dict):
+            continue
+        for key in CLAIM_COUNTER_KEYS:
+            totals[key] += int(claims.get(key, 0) or 0)
+    return totals
 
 
 def _write_dataset_split_stats(
     hf_dataset: str,
     hf_config: str,
     label_col: str,
+    origin_col: str,
 ) -> tuple[Path, dict]:
     DATA_STATS_DIR.mkdir(parents=True, exist_ok=True)
     dataset_dict = _load_hf_dataset_dict(hf_dataset, hf_config)
     classes = ["true", "false", "unverified"]
 
-    splits_report: dict[str, dict[str, int]] = {}
-    for split_name, split_ds in dataset_dict.items():
-        df = split_ds.to_pandas()
-        labels = [_normalize_label(value) for value in df[label_col].tolist()] if label_col in df.columns else []
-        splits_report[split_name] = {
-            "total": len(df),
+    def _label_counts(values: list[object]) -> dict[str, int]:
+        labels = [_normalize_label(value) for value in values]
+        counts = {
+            "total": len(values),
             "true": sum(1 for value in labels if value == "true"),
             "false": sum(1 for value in labels if value == "false"),
             "unverified": sum(1 for value in labels if value == "unverified"),
         }
         for label in classes:
-            splits_report[split_name].setdefault(label, 0)
+            counts.setdefault(label, 0)
+        return counts
+
+    splits_report: dict[str, dict[str, int]] = {}
+    per_origin: dict[str, dict[str, object]] = {}
+    for split_name, split_ds in dataset_dict.items():
+        df = split_ds.to_pandas()
+        if label_col in df.columns:
+            splits_report[split_name] = _label_counts(df[label_col].tolist())
+        else:
+            splits_report[split_name] = {"total": len(df), "true": 0, "false": 0, "unverified": 0}
+
+        if origin_col not in df.columns:
+            continue
+
+        for origin_value, group in df.groupby(origin_col, sort=True):
+            origin_name = _normalize_origin_value(origin_value)
+            if not origin_name:
+                continue
+
+            origin_entry = per_origin.setdefault(
+                origin_name,
+                {
+                    "total": 0,
+                    "splits": {},
+                },
+            )
+            origin_entry["total"] += len(group)
+            if label_col in group.columns:
+                origin_entry["splits"][split_name] = _label_counts(group[label_col].tolist())
+            else:
+                origin_entry["splits"][split_name] = {
+                    "total": len(group),
+                    "true": 0,
+                    "false": 0,
+                    "unverified": 0,
+                }
 
     report = {
         "dataset": hf_dataset,
         "config": hf_config,
         "label_column": label_col,
+        "origin_column": origin_col,
         "splits": splits_report,
+        "per_origin": per_origin,
+        "origin_count": len(per_origin),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
     report_path = DATA_STATS_DIR / f"{_slugify(hf_dataset)}.json"
@@ -290,6 +602,32 @@ def _load_model_config(config_path: Path) -> dict:
         return yaml.safe_load(handle) or {}
 
 
+def _prepare_solver_config(
+    *,
+    base_config_path: Path,
+    output_dir: Path,
+    num_rounds_qgen: int,
+    max_evidences_per_question: int,
+) -> Path:
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("pyyaml is required to prepare solver config") from exc
+
+    payload = _load_model_config(base_config_path)
+    solvers = payload.setdefault("solvers", {})
+    retriever = solvers.setdefault("rarr_retriever", {})
+    verifier = solvers.setdefault("rarr_verifier", {})
+
+    retriever["num_rounds_qgen"] = max(1, int(num_rounds_qgen))
+    verifier["max_evidences_per_question"] = max(1, int(max_evidences_per_question))
+
+    resolved_path = output_dir / "solver_config.resolved.yaml"
+    with open(resolved_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
+    return resolved_path
+
+
 def _model_report_identity(config_path: Path) -> tuple[str, dict]:
     config = _load_model_config(config_path)
     global_config = config.get("global_config", {}) if isinstance(config, dict) else {}
@@ -303,147 +641,125 @@ def _model_report_identity(config_path: Path) -> tuple[str, dict]:
     }
 
 
-def _write_model_eval_report(
+def _build_meta_eval(
+    *,
     run_id: str,
     dataset_name: str,
     hf_split: str,
-    labels: list[str],
-    prediction_buckets: dict[int, str],
-    config_path: Path,
-) -> tuple[Path, dict]:
-    EVAL_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    model_id, model_info = _model_report_identity(config_path)
-    report_path = EVAL_REPORTS_DIR / f"{model_id}.json"
+    model_id: str,
+    model_info: dict,
+    labels: list[str] | None,
+    label_audit: dict | None,
+    entries: list[dict],
+    search_stats: dict | None = None,
+) -> dict:
+    prediction_options = ["true", "false", "unverifiable", "ambiguous"]
+    gold_options = ["true", "false", "unverified"]
 
-    if report_path.exists():
-        with open(report_path, "r", encoding="utf-8") as handle:
-            report = json.load(handle)
-    else:
-        report = {
-            "model": model_info,
-            "runs": {},
-        }
+    matrix = {gold: {pred: 0 for pred in prediction_options} for gold in gold_options}
+    rows_scored = 0
+    correct = 0
+    total_evidence_count = 0
+    entries_with_detail = 0
 
-    per_category = {
-        "true": {
-            "total": 0,
-            "predicted_correctly": 0,
-            "predicted_other_binary": 0,
-            "predicted_ambiguous": 0,
-            "predicted_unverifiable": 0,
-        },
-        "false": {
-            "total": 0,
-            "predicted_correctly": 0,
-            "predicted_other_binary": 0,
-            "predicted_ambiguous": 0,
-            "predicted_unverifiable": 0,
-        },
-        "unverified": {
-            "total": 0,
-            "predicted_correctly": 0,
-            "predicted_other_binary": 0,
-            "predicted_ambiguous": 0,
-            "predicted_unverifiable": 0,
-        },
-    }
+    for idx, entry in enumerate(entries):
+        pred_bucket = entry.get("pred_bucket", "unverifiable")
+        detail = entry.get("detail", [])
+        if isinstance(detail, list):
+            evidence_count = 0
+            for claim_detail in detail:
+                if not isinstance(claim_detail, dict):
+                    continue
+                evidences = claim_detail.get("evidences", [])
+                if isinstance(evidences, list):
+                    evidence_count += len(evidences)
+            total_evidence_count += evidence_count
+            entries_with_detail += 1
 
-    for idx, gold in enumerate(labels):
-        pred = prediction_buckets.get(idx)
-        if gold not in per_category or pred is None:
+        if labels is None or idx >= len(labels):
             continue
-        per_category[gold]["total"] += 1
-        if gold == "true":
-            if pred == "true":
-                per_category[gold]["predicted_correctly"] += 1
-            elif pred == "false":
-                per_category[gold]["predicted_other_binary"] += 1
-            elif pred == "ambiguous":
-                per_category[gold]["predicted_ambiguous"] += 1
-            elif pred == "unverifiable":
-                per_category[gold]["predicted_unverifiable"] += 1
-        elif gold == "false":
-            if pred == "false":
-                per_category[gold]["predicted_correctly"] += 1
-            elif pred == "true":
-                per_category[gold]["predicted_other_binary"] += 1
-            elif pred == "ambiguous":
-                per_category[gold]["predicted_ambiguous"] += 1
-            elif pred == "unverifiable":
-                per_category[gold]["predicted_unverifiable"] += 1
-        else:
-            if pred == "unverifiable":
-                per_category[gold]["predicted_correctly"] += 1
-            elif pred in {"true", "false"}:
-                per_category[gold]["predicted_other_binary"] += 1
-            elif pred == "ambiguous":
-                per_category[gold]["predicted_ambiguous"] += 1
+        gold = labels[idx] if labels[idx] in gold_options else "unverified"
+        if pred_bucket not in prediction_options:
+            pred_bucket = "ambiguous"
+        matrix[gold][pred_bucket] += 1
+        rows_scored += 1
+        if (gold == "true" and pred_bucket == "true") or (gold == "false" and pred_bucket == "false") or (
+            gold == "unverified" and pred_bucket == "unverifiable"
+        ):
+            correct += 1
 
-    report["runs"][run_id] = {
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "run_id": run_id,
         "dataset": dataset_name,
         "split": hf_split,
+        "model_id": model_id,
+        "model": model_info,
+        "rows_total": len(entries),
+        "rows_scored": rows_scored,
+        "accuracy": (correct / rows_scored) if rows_scored else None,
+        "avg_evidence_per_row": (
+            total_evidence_count / len(entries) if entries else 0.0
+        ),
+        "avg_evidence_per_benchmark_query": (
+            total_evidence_count / len(entries) if entries else 0.0
+        ),
+        "avg_evidence_per_row_with_detail": (
+            total_evidence_count / entries_with_detail if entries_with_detail else 0.0
+        ),
+        "total_evidence_retrieved": total_evidence_count,
+        "search_stats": search_stats or {},
+        "per_category_prediction_counts": matrix,
+        "label_audit": label_audit,
+    }
+
+
+def _write_compact_eval_reports(
+    *,
+    output_dir: Path,
+    run_id: str,
+    dataset_name: str,
+    hf_split: str,
+    config_path: Path,
+    labels: list[str] | None,
+    label_audit: dict | None,
+    entries: list[dict],
+    search_stats: dict | None = None,
+) -> tuple[Path, Path, dict]:
+    model_id, model_info = _model_report_identity(config_path)
+    model_path = output_dir / f"{model_id}.json"
+    meta_path = output_dir / "meta_eval.json"
+    claim_totals = _aggregate_claim_counters(entries)
+
+    model_payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "rows_scored": sum(1 for idx in range(len(labels)) if idx in prediction_buckets),
-        "per_category": per_category,
+        "run_id": run_id,
+        "dataset": dataset_name,
+        "split": hf_split,
+        "model_id": model_id,
+        "model": model_info,
+        "claims": claim_totals,
+        "entries": entries,
     }
+    with open(model_path, "w", encoding="utf-8") as handle:
+        json.dump(model_payload, handle, indent=2, sort_keys=True)
 
-    with open(report_path, "w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, sort_keys=True)
-    return report_path, report
+    meta_payload = _build_meta_eval(
+        run_id=run_id,
+        dataset_name=dataset_name,
+        hf_split=hf_split,
+        model_id=model_id,
+        model_info=model_info,
+        labels=labels,
+        label_audit=label_audit,
+        entries=entries,
+        search_stats=search_stats,
+    )
+    meta_payload["claims"] = claim_totals
+    with open(meta_path, "w", encoding="utf-8") as handle:
+        json.dump(meta_payload, handle, indent=2, sort_keys=True)
 
-
-def _collect_predictions(output_dir: Path) -> dict[int, str]:
-    pred_by_idx: dict[int, str] = {}
-    for path in glob(str(output_dir / "*" / "eval_result.json")):
-        dirname = os.path.basename(os.path.dirname(path))
-        match = re.search(r"_(\d+)_[0-9a-f]{32}$", dirname)
-        if not match:
-            continue
-        idx = int(match.group(1))
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        pred_by_idx[idx] = _infer_pred_label(payload)
-    return pred_by_idx
-
-
-def _write_ground_truth_report(output_dir: Path, labels: list[str], preds: dict[int, str]) -> tuple[Path, dict]:
-    classes = ["true", "false", "unverified"]
-    comparable = [(gold, preds[idx]) for idx, gold in enumerate(labels) if idx in preds]
-
-    correct = sum(1 for g, p in comparable if g == p)
-    incorrect = len(comparable) - correct
-    accuracy = correct / len(comparable) if comparable else None
-
-    confusion = {gold: {pred: 0 for pred in classes} for gold in classes}
-    for gold, pred in comparable:
-        g = gold if gold in classes else "unverified"
-        p = pred if pred in classes else "unverified"
-        confusion[g][p] += 1
-
-    report = {
-        "total_rows": len(labels),
-        "rows_with_predictions": len(preds),
-        "rows_scored": len(comparable),
-        "correct": correct,
-        "incorrect": incorrect,
-        "ground_truth_counts": {
-            "true": sum(1 for x in labels if x == "true"),
-            "false": sum(1 for x in labels if x == "false"),
-            "unverified": sum(1 for x in labels if x == "unverified"),
-        },
-        "prediction_counts": {
-            "true": sum(1 for x in preds.values() if x == "true"),
-            "false": sum(1 for x in preds.values() if x == "false"),
-            "unverified": sum(1 for x in preds.values() if x == "unverified"),
-        },
-        "accuracy": accuracy,
-        "confusion": confusion,
-    }
-
-    report_path = output_dir / "ground_truth_report.json"
-    with open(report_path, "w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, sort_keys=True)
-    return report_path, report
+    return model_path, meta_path, meta_payload
 
 
 def _default_run_id(hf_dataset: str) -> str:
@@ -451,29 +767,169 @@ def _default_run_id(hf_dataset: str) -> str:
     return ("rarr-hf-" if hf_dataset else "rarr-dataset-") + now
 
 
+def _normalize_origin_value(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"", "na", "none", "null", "nan"} else text
+
+
+def _origin_counts(df: pd.DataFrame, col: str) -> list[tuple[str, int]]:
+    normalized = [_normalize_origin_value(v) for v in df[col].tolist()]
+    counts: dict[str, int] = {}
+    for value in normalized:
+        if not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
+
+
+def _safe_rmtree(path: Path) -> None:
+    def _onerror(func, p, exc_info):
+        exc = exc_info[1]
+        if isinstance(exc, FileNotFoundError):
+            return
+        raise exc
+
+    shutil.rmtree(path, onerror=_onerror)
+
+
+def _clip_text(value: object, max_chars: int = 700) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _print_first_sample_sanity(entries: list[dict], labels: list[str] | None) -> None:
+    if not entries:
+        return
+
+    first = entries[0] if isinstance(entries[0], dict) else {}
+    details = first.get("detail") if isinstance(first.get("detail"), list) else []
+    if not details:
+        print("  sanity first-sample: no verifier details available")
+        return
+
+    first_detail = details[0] if isinstance(details[0], dict) else {}
+    claim = _clip_text(first_detail.get("claim") or first.get("prompt", ""), max_chars=240)
+    evidences = first_detail.get("evidences") if isinstance(first_detail.get("evidences"), list) else []
+
+    first_query = ""
+    first_evidence = ""
+    first_structural = ""
+    if evidences:
+        sample = evidences[0]
+        if isinstance(sample, (list, tuple)):
+            if len(sample) > 0:
+                first_query = _clip_text(sample[0], max_chars=240)
+            if len(sample) > 1:
+                first_evidence = _clip_text(sample[1], max_chars=320)
+            if len(sample) > 2:
+                first_structural = _clip_text(sample[2], max_chars=280)
+
+    gate_debug = first_detail.get("gate_debug") if isinstance(first_detail.get("gate_debug"), list) else []
+    first_gate = gate_debug[0] if gate_debug and isinstance(gate_debug[0], dict) else {}
+    final_prompt = _clip_text(first_gate.get("prompt_input", ""), max_chars=1100)
+    gate_answer = _clip_text(first_gate.get("raw_response", ""), max_chars=320)
+    gate_decision = first_gate.get("decision", "")
+
+    gold_label = first.get("gold_label")
+    if gold_label is None and labels:
+        gold_label = labels[0]
+
+    print("  sanity first-sample:")
+    print(f"    claim: {claim or '<missing>'}")
+    print(f"    first query: {first_query or '<missing>'}")
+    print(f"    final verifier prompt: {final_prompt or '<missing>'}")
+    print(f"    retrieved answer snippet: {first_evidence or '<missing>'}")
+    if first_structural:
+        print(f"    structural/score context: {first_structural}")
+    print(
+        f"    verifier answer: {gate_answer or '<empty>'}"
+        f" (decision={gate_decision or 'unknown'})"
+    )
+    print(f"    gold truth: {gold_label if gold_label is not None else '<unavailable>'}")
+
+
 def run(args: argparse.Namespace) -> None:
-    _validate_runtime(args)
+    inferred_backend = _configure_backend_environment(args)
+    resolved_condition = _configure_condition_environment(args)
+    resolved_num_rounds_qgen, resolved_max_evidences = _resolve_runtime_hyperparameters(
+        condition=resolved_condition,
+        num_rounds_qgen=args.num_rounds_qgen,
+        max_evidences_per_question=args.max_evidences_per_question,
+    )
+    args.num_rounds_qgen = resolved_num_rounds_qgen
+    args.max_evidences_per_question = resolved_max_evidences
+
+    if args.hf_list_origin_values and not args.hf_dataset:
+        raise ValueError("Use --hf-dataset together with --hf-list-origin-values")
+
+    if not args.hf_list_origin_values:
+        _validate_runtime(args)
 
     if not args.hf_dataset and not args.dataset_path:
-        raise ValueError("dataset_path is required unless --hf-dataset is provided")
+        raise ValueError("Provide a dataset path unless you are using --hf-dataset")
 
     run_id = args.run_id or _default_run_id(args.hf_dataset)
-    max_rows = args.max_rows
-    output_dir = ROOT_DIR / "eval_results" / "custom" / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
+    max_rows = args.max_rows if args.max_rows is not None else args.max_rows_flag
+    max_rows_display = "all" if max_rows is None else str(int(max_rows))
 
-    if os.getenv("RARR_STRUCTURAL_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        os.environ.setdefault(
-            "RARR_STRUCTURAL_CACHE_FILE",
-            str((output_dir / "structural_domain_cache.json").resolve()),
-        )
+    print(
+        "Run settings: "
+        f"condition={resolved_condition}, "
+        f"backend={inferred_backend}, "
+        f"max_rows={max_rows_display}, "
+        f"num_rounds_qgen={resolved_num_rounds_qgen}, "
+        f"max_evidences_per_question={resolved_max_evidences}"
+    )
+    output_dir = ROOT_DIR / "eval_results" / "custom" / run_id
+    if output_dir.exists():
+        _safe_rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.hf_dataset:
         df = _load_hf_dataset(args.hf_dataset, args.hf_config, args.hf_split)
+
+        if args.hf_list_origin_values:
+            if args.hf_origin_col not in df.columns:
+                raise ValueError(
+                    f"Couldn't find origin column '{args.hf_origin_col}' in this Hugging Face split. "
+                    f"Available columns: {', '.join(df.columns)}"
+                )
+            counts = _origin_counts(df, args.hf_origin_col)
+            if not counts:
+                print(
+                    f"No usable origin values were found in column '{args.hf_origin_col}' "
+                    f"for {args.hf_dataset}/{args.hf_config}:{args.hf_split}"
+                )
+                return
+            print(f"Origin values in '{args.hf_origin_col}' for {args.hf_dataset}/{args.hf_config}:{args.hf_split}")
+            for value, count in counts:
+                print(f"{value}\t{count}")
+            return
+
+        if args.hf_origin_value:
+            if args.hf_origin_col not in df.columns:
+                raise ValueError(
+                    f"Couldn't find origin column '{args.hf_origin_col}' in this Hugging Face split. "
+                    f"Available columns: {', '.join(df.columns)}"
+                )
+            wanted = args.hf_origin_value.strip().casefold()
+            mask = df[args.hf_origin_col].apply(lambda v: _normalize_origin_value(v).casefold() == wanted)
+            df = df[mask].reset_index(drop=True)
+            if df.empty:
+                raise ValueError(
+                    f"No rows matched {args.hf_origin_col}='{args.hf_origin_value}' "
+                    f"in {args.hf_dataset}/{args.hf_config}:{args.hf_split}"
+                )
     else:
         dataset_path = str(Path(args.dataset_path).resolve())
         if not Path(dataset_path).is_file():
-            raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
+            raise FileNotFoundError(f"Couldn't find dataset file: {dataset_path}")
         df = _load_local_dataset(dataset_path)
 
     if "prompt" not in df.columns:
@@ -482,81 +938,158 @@ def run(args: argparse.Namespace) -> None:
         elif "claim" in df.columns:
             df["prompt"] = df["claim"]
         else:
-            raise ValueError("Dataset must include 'prompt' (or 'claim').")
+            raise ValueError("Dataset must include a 'prompt' column or a fallback 'claim' column")
 
     if "response" not in df.columns:
         if args.hf_dataset:
             df["response"] = df["prompt"]
         else:
-            raise ValueError("Dataset must include 'response'.")
+            raise ValueError("Dataset must include a 'response' column")
+
+    df["prompt"] = df["prompt"].apply(_normalize_text_value)
+    df["response"] = df["response"].apply(_normalize_text_value)
 
     if "source" not in df.columns:
-        df["source"] = "hf-dataset" if args.hf_dataset else "custom-dataset"
+        if args.hf_dataset and args.hf_origin_col in df.columns:
+            df["source"] = df[args.hf_origin_col]
+        else:
+            df["source"] = "hf-dataset" if args.hf_dataset else "custom-dataset"
 
-    records = df[["source", "prompt", "response"]].dropna().head(max_rows).reset_index(drop=True)
+    df["source"] = df["source"].apply(_normalize_text_value)
+    if args.hf_dataset and args.hf_origin_col in df.columns:
+        fallback_source = df[args.hf_origin_col].apply(_normalize_text_value)
+        df["source"] = df["source"].fillna(fallback_source)
+    df["source"] = df["source"].fillna("hf-dataset" if args.hf_dataset else "custom-dataset")
+
+    valid_df = df[df["prompt"].notna() & df["response"].notna()].copy()
+    if max_rows is None:
+        records = valid_df[["source", "prompt", "response"]].reset_index(drop=True)
+    else:
+        records = valid_df[["source", "prompt", "response"]].head(max_rows).reset_index(drop=True)
     if records.empty:
-        raise ValueError("No valid rows found after filtering null prompt/response")
+        raise ValueError("No usable rows remained after filtering empty prompt/response values")
 
     labels = None
-    if args.hf_dataset and args.hf_label_col in df.columns:
-        labels = [_normalize_label(v) for v in df[args.hf_label_col].head(max_rows).tolist()]
+    label_audit = None
+    label_col = _resolve_label_column(valid_df, args.hf_label_col)
+    if label_col:
+        raw_labels = valid_df[label_col].tolist() if max_rows is None else valid_df[label_col].head(max_rows).tolist()
+        labels = [_normalize_label(v) for v in raw_labels]
+        label_audit = _build_label_audit(raw_labels, labels)
 
     dataset_name = str(df["source"].iloc[0]) if not df.empty else (args.hf_dataset or "custom-dataset")
+    if args.hf_dataset and args.hf_origin_value:
+        dataset_name = args.hf_origin_value
 
     _python_path_setup()
     from context_core.benchmark import evaluate_free_text_with_auto_checker
+    from context_core.utils import search as search_utils
+
+    search_utils.reset_search_stats()
+
+    base_config_path = (LOCAL_CORE_DIR / "config" / "rarr_web_service_config.yaml").resolve()
+    resolved_solver_config = _prepare_solver_config(
+        base_config_path=base_config_path,
+        output_dir=output_dir,
+        num_rounds_qgen=resolved_num_rounds_qgen,
+        max_evidences_per_question=resolved_max_evidences,
+    )
 
     solver_args = argparse.Namespace(
         user_src=str((LOCAL_CORE_DIR / "solvers").resolve()),
-        config=str((LOCAL_CORE_DIR / "config" / "rarr_web_service_config.yaml").resolve()),
-        output=str((output_dir / "truth").resolve()),
+        config=str(resolved_solver_config.resolve()),
+        output=str(output_dir.resolve()),
+        persist_outputs=False,
         openai_apikey=os.getenv("OPENAI_API_KEY"),
         factcheck_model=args.factcheck_model,
         rarr_model=args.rarr_model,
     )
 
-    evaluate_free_text_with_auto_checker(
+    entries = evaluate_free_text_with_auto_checker(
         records.to_dict("records"),
         response_column_name="dataset_response",
         args=solver_args,
         projectdir=str(output_dir.resolve()),
     )
 
-    print(f"Run complete: {run_id}")
-    print(f"Rows processed: {len(records)}")
-    print(f"Output: {output_dir}")
+    _annotate_eval_entries(entries)
+    if labels is not None:
+        for idx, gold in enumerate(labels):
+            if idx < len(entries):
+                entries[idx]["gold_label"] = gold
+
+    model_path, meta_path, meta_payload = _write_compact_eval_reports(
+        output_dir=output_dir,
+        run_id=run_id,
+        dataset_name=args.hf_dataset or dataset_name,
+        hf_split=args.hf_split,
+        config_path=Path(solver_args.config),
+        labels=labels,
+        label_audit=label_audit,
+        entries=entries,
+        search_stats=search_utils.get_search_stats(),
+    )
+
+    print(f"Run finished: {run_id}")
+    print(f"Rows processed: {len(records)} | Output folder: {output_dir}")
+    print(f"Model log: {model_path} | Summary report: {meta_path}")
 
     if args.hf_dataset:
-        stats_path, _ = _write_dataset_split_stats(args.hf_dataset, args.hf_config, args.hf_label_col)
-        print(f"Dataset split stats: {stats_path}")
+        stats_path, _ = _write_dataset_split_stats(
+            args.hf_dataset,
+            args.hf_config,
+            args.hf_label_col,
+            args.hf_origin_col,
+        )
+        print(f"Dataset split stats saved to: {stats_path}")
+
+    ss = meta_payload.get("search_stats", {})
+    print(
+        f"Run summary:\n"
+        f"  rows scored: {meta_payload['rows_scored']}\n"
+        f"  avg evidence/row: {meta_payload['avg_evidence_per_row']:.2f}\n"
+        f"  avg evidence/benchmark query: {meta_payload['avg_evidence_per_benchmark_query']:.2f}\n"
+        f"  avg evidence/row (with detail): {meta_payload['avg_evidence_per_row_with_detail']:.2f}\n"
+        f"  total evidence retrieved: {meta_payload['total_evidence_retrieved']}\n"
+        f"  search timeouts: {ss.get('search_timeouts', 0)}\n"
+        f"  serper->ddg fallbacks: {ss.get('serper_timeout_fallback_to_ddg', 0)}\n"
+        f"  provider failures: {ss.get('provider_failures', 0)}\n"
+        f"  queries with no results: {ss.get('queries_with_no_results', 0)}"
+    )
+    tp_total = ss.get("third_party_evidence_total", 0)
+    tp_scored = ss.get("third_party_evidence_scored", 0)
+    if tp_total > 0:
+        print(f"  third-party score coverage: {tp_scored}/{tp_total} ({100.0 * tp_scored / tp_total:.1f}%)")
 
     if labels is not None:
-        preds = _collect_predictions(output_dir)
-        prediction_buckets = _collect_prediction_buckets(output_dir, len(labels), dataset_name)
-        report_path, report = _write_ground_truth_report(output_dir, labels, preds)
-        eval_report_path, _ = _write_model_eval_report(
-            run_id=run_id,
-            dataset_name=args.hf_dataset or dataset_name,
-            hf_split=args.hf_split,
-            labels=labels,
-            prediction_buckets=prediction_buckets,
-            config_path=Path(solver_args.config),
-        )
-        print("Ground-truth report:")
-        print(f"  path: {report_path}")
-        print(f"  rows scored: {report['rows_scored']}")
-        print(f"  correct: {report['correct']}")
-        print(f"  incorrect: {report['incorrect']}")
-        print(
-            "  gt counts: "
-            f"true={report['ground_truth_counts']['true']}, "
-            f"false={report['ground_truth_counts']['false']}, "
-            f"unverified={report['ground_truth_counts']['unverified']}"
-        )
-        print(f"  accuracy: {report['accuracy']}")
-        print(f"Model eval report: {eval_report_path}")
-    elif args.hf_dataset:
-        print(f"No '{args.hf_label_col}' column found in HF split; skipping ground-truth report.")
+        print(f"  accuracy: {meta_payload['accuracy']}")
+        audit = meta_payload.get("label_audit") or {}
+        if audit:
+            norm = audit.get("normalized_counts", {})
+            print(
+                f"  label audit: rows={audit.get('rows_considered', 0)}, raw_unique={audit.get('raw_unique', 0)}, "
+                f"fallback={audit.get('fallback_count', 0)}, normalized(true={norm.get('true', 0)}, "
+                f"false={norm.get('false', 0)}, unverified={norm.get('unverified', 0)})"
+            )
+            top_fallback = audit.get("top_fallback_labels", [])
+            if top_fallback:
+                fallback_text = ", ".join(
+                    f"{item.get('label')}={item.get('count')}" for item in top_fallback[:5]
+                )
+                print(f"  label audit fallback examples: {fallback_text}")
+        for category in ("true", "false", "unverified"):
+            counts = meta_payload["per_category_prediction_counts"].get(category, {})
+            print(
+                f"  {category}: true={counts.get('true', 0)}, false={counts.get('false', 0)}, "
+                f"unverifiable={counts.get('unverifiable', 0)}, ambiguous={counts.get('ambiguous', 0)}"
+            )
+    else:
+        if args.hf_dataset:
+            print(f"No usable label column was found (expected '{args.hf_label_col}'), so ground-truth metrics were skipped.")
+        else:
+            print("No usable label column was found in this local dataset, so ground-truth metrics were skipped.")
+
+    _print_first_sample_sanity(entries, labels)
 
 
 def main() -> None:
