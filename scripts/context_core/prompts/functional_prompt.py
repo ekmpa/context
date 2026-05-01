@@ -150,10 +150,10 @@ AGREEMENT_GATE_PROMPT = """I will check some things you said.
 6. Therefore: Choose exactly one label from {{agrees, disagrees, ambiguous, unverifiable}}.
 
 Label definitions:
-- agrees: evidence supports the claim.
-- disagrees: evidence contradicts the claim.
+- agrees: reasoning on the evidence, supports the claim.
+- disagrees: reasoning on the evidence, contradicts the claim.
 - ambiguous: there are multiple plausible interpretations or conflicting signals, so a single clear verdict is not possible.
-- unverifiable: given the available evidence, the claim cannot be confidently verified or falsified.
+- unverifiable: there is not a single answer (True/False) for this claim, given current evidence / knowledge. 
 """.strip()
 
 CONTEXTUAL_AGREEMENT_GATE_PROMPT = """I will check some things you said.

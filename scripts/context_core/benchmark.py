@@ -1,8 +1,6 @@
 import json
 import math
-import os
 import time
-from hashlib import md5
 
 import pandas as pd
 
@@ -22,23 +20,6 @@ def estimate_auto_checker_price(num_claims, checker_config_name, openai_cost=0.0
 
 def sumAllObj(obj):
     return sum(obj.values())
-
-
-def _read_latest_state(truth_output_dir, sample_name):
-    result_path = os.path.join(truth_output_dir, f"{sample_name}.jsonl")
-    if not os.path.exists(result_path):
-        return {}
-
-    latest = None
-    with open(result_path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                latest = json.loads(line)
-
-    if latest is None:
-        return {}
-    return latest.get("state", {})
 
 
 def _extract_claim_counts(state):
@@ -117,25 +98,23 @@ def evaluate_free_text_with_auto_checker(
     if hot_reload["global_config"]:
         pipeline.hot_reload_global_config(hot_reload)
 
+    entries = []
     for i in range(len(llm_response_data["prompt"])):
         prompt = llm_response_data["prompt"][i]
         response = llm_response_data["response"][i]
         sample_name = response_column_name[:-9] + f"_{dataset_name}_{i}"
-        dirname = sample_name + "_" + md5(prompt.encode()).hexdigest()
-        dirpath = os.path.join(projectdir, dirname)
-        os.makedirs(dirpath, exist_ok=True)
 
         start = time.time() * 1000
         error_message = None
+        state = {}
         try:
             result_label = pipeline(
                 question=prompt,
                 response=response,
                 sample_name=sample_name,
             )
-            claims = _extract_claim_counts(
-                _read_latest_state(pipeline.output_path, sample_name)
-            )
+            state = getattr(pipeline, "last_state", {}) or {}
+            claims = _extract_claim_counts(state)
         except Exception as exc:
             # Keep batch runs resilient: record the failure and move to next sample.
             result_label = None
@@ -149,16 +128,20 @@ def evaluate_free_text_with_auto_checker(
         end = time.time() * 1000
 
         result = {
+            "index": i,
             "start": math.floor(start),
             "end": math.floor(end),
             "llm": response_column_name,
             "dataset": llm_response_data["source"][i],
             "prompt": prompt,
+            "response": response,
             "claims": claims,
             "result": result_label,
+            "detail": state.get("detail", []),
         }
         if error_message is not None:
             result["error"] = error_message
 
-        with open(os.path.join(dirpath, "eval_result.json"), "w", encoding="utf-8") as handle:
-            json.dump(result, handle)
+        entries.append(result)
+
+    return entries

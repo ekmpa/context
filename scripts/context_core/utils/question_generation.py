@@ -1,7 +1,30 @@
 """Utils for running question generation."""
+import os
 from typing import List
 
 from context_core.llm import completion_text
+
+
+DEFAULT_MAX_CLAIM_CHARS = 2000
+MIN_CLAIM_CHARS = 240
+
+
+def _max_claim_chars() -> int:
+    raw = os.getenv("RARR_MAX_CLAIM_CHARS", str(DEFAULT_MAX_CLAIM_CHARS)).strip()
+    try:
+        return max(MIN_CLAIM_CHARS, int(raw))
+    except Exception:
+        return DEFAULT_MAX_CLAIM_CHARS
+
+
+def _truncate_claim(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _is_context_window_error(exc: Exception) -> bool:
+    return "context window" in str(exc).lower() or "context length" in str(exc).lower()
 
 
 def parse_api_response(api_response: str) -> List[str]:
@@ -50,20 +73,39 @@ def run_rarr_question_generation(
     Returns:
         questions: A list of questions.
     """
-    if context:
-        gpt3_input = prompt.format(context=context, claim=claim).strip()
-    else:
-        gpt3_input = prompt.format(claim=claim).strip()
+    claim_text = str(claim or "").strip()
+    max_chars = _max_claim_chars()
+    truncated_claim = _truncate_claim(claim_text, max_chars)
+
+    def _build_prompt(active_claim: str) -> str:
+        if context:
+            return prompt.format(context=context, claim=active_claim).strip()
+        return prompt.format(claim=active_claim).strip()
 
     questions = set()
     for _ in range(num_rounds):
-        response_text = completion_text(
-            gpt3_input,
-            model=model,
-            temperature=temperature,
-            max_tokens=256,
-            num_retries=num_retries,
-        )
+        active_claim = truncated_claim
+        response_text = ""
+
+        # Retry with smaller claim slices if the model still reports context overflow.
+        for _attempt in range(3):
+            gpt3_input = _build_prompt(active_claim)
+            try:
+                response_text = completion_text(
+                    gpt3_input,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=256,
+                    num_retries=num_retries,
+                )
+                break
+            except RuntimeError as exc:
+                if _is_context_window_error(exc) and len(active_claim) > MIN_CLAIM_CHARS:
+                    next_len = max(MIN_CLAIM_CHARS, int(len(active_claim) * 0.6))
+                    active_claim = _truncate_claim(active_claim, next_len)
+                    continue
+                raise
+
         cur_round_questions = parse_api_response(response_text.strip())
         questions.update(cur_round_questions)
 

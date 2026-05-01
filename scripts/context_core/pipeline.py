@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 class Pipeline:
     def __init__(self, args):
         self.args = args
+        self.persist_outputs = bool(getattr(self.args, "persist_outputs", True))
+        self.last_state = {}
 
         user_src = getattr(self.args, "user_src", None)
         if user_src is not None:
@@ -163,7 +165,8 @@ class Pipeline:
                         output=solver_output.__dict__,
                         continue_run=cont
                     )
-                self.persist_output(solver_output, idx, name, cont, sample_name=sample_name)
+                if self.persist_outputs:
+                    self.persist_output(solver_output, idx, name, cont, sample_name=sample_name)
             except Exception:
                 print(traceback.format_exc())
                 cont = False
@@ -172,4 +175,5 @@ class Pipeline:
                 logger.info(f"Break at {name}")
                 break
 
+        self.last_state = solver_output.to_dict()
         return solver_output.get(oname)

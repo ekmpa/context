@@ -21,25 +21,46 @@ class RARRAgreementGate(StandardTaskSolver):
             result = {}
             evidences = evidences[:self.max_evidences_per_question]
             decisions = []
+            gate_debug = []
             for evidence_item in evidences:
                 if len(evidence_item) >= 3:
                     query, evidence, structural_context = evidence_item[0], evidence_item[1], evidence_item[2]
                 else:
                     query, evidence = evidence_item
                     structural_context = ""
-                gate = agreement_gate.run_agreement_gate(
-                    claim=claim,
-                    context=None,
-                    query=query,
-                    evidence=evidence,
-                    structural_context=structural_context,
-                    model=self.model,
-                    prompt=functional_prompt.AGREEMENT_GATE_PROMPT
-                )
+                try:
+                    gate = agreement_gate.run_agreement_gate(
+                        claim=claim,
+                        context=None,
+                        query=query,
+                        evidence=evidence,
+                        structural_context=structural_context,
+                        model=self.model,
+                        prompt=functional_prompt.AGREEMENT_GATE_PROMPT
+                    )
+                except Exception as exc:
+                    logging.warning("[rarr_verifier] agreement gate failed; marking evidence unverifiable: %s", exc)
+                    gate = {
+                        "is_open": False,
+                        "reason": f"agreement gate failed: {exc}",
+                        "decision": "unverifiable",
+                        "raw_response": "",
+                        "prompt_input": "",
+                    }
                 decisions.append(gate["decision"])
+                gate_debug.append(
+                    {
+                        "query": query,
+                        "decision": gate.get("decision"),
+                        "reason": gate.get("reason"),
+                        "raw_response": gate.get("raw_response", ""),
+                        "prompt_input": gate.get("prompt_input", ""),
+                    }
+                )
             result['claim'] = claim
             result['evidences'] = evidences
             result['labels'] = decisions
+            result['gate_debug'] = gate_debug
 
             if decisions and all(d == "agrees" for d in decisions):
                 result['factuality'] = True

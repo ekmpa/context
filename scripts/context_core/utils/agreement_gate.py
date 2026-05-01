@@ -1,7 +1,30 @@
 """Utils for running the agreement gate."""
+import os
+import re
 from typing import Any, Dict, Tuple
 
 from context_core.llm import completion_text
+
+
+DEFAULT_MAX_GATE_CLAIM_CHARS = 2000
+DEFAULT_MAX_GATE_QUERY_CHARS = 400
+DEFAULT_MAX_GATE_EVIDENCE_CHARS = 3500
+DEFAULT_MAX_GATE_STRUCTURAL_CHARS = 1000
+
+
+def _get_int_env(name: str, default: int, minimum: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return max(minimum, int(raw))
+    except Exception:
+        return default
+
+
+def _clip_text(value: object, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 def _normalize_decision(raw_decision: str | None) -> str:
@@ -34,17 +57,32 @@ def parse_api_response(api_response: str) -> Tuple[bool, str, str]:
         reason: The reasoning for why the agreement gate is open or closed.
         decision: The decision of the status of the gate in string form.
     """
-    lines = [line.strip() for line in api_response.strip().split("\n") if line.strip()]
-    if len(lines) < 2:
-        reason = "Failed to parse."
-        decision = "unverifiable"
-        is_open = False
-    else:
+    response_text = (api_response or "").strip()
+    lines = [line.strip() for line in response_text.split("\n") if line.strip()]
+    reason = ""
+
+    reasoning_line = next((line for line in lines if line.lower().startswith("reasoning:")), "")
+    if reasoning_line:
+        reason = reasoning_line.split(":", 1)[-1].strip()
+    elif lines:
         reason = lines[0]
-        decision_line = next((line for line in lines if "therefore:" in line.lower()), lines[1])
-        decision_raw = decision_line.split(":", 1)[-1].strip() if ":" in decision_line else decision_line
-        decision = _normalize_decision(decision_raw)
-        is_open = decision == "agrees"
+
+    decision_match = re.search(
+        r"(?:therefore\s*:|final answer\s*:|decision\s*:|label\s*:)?\s*"
+        r"(agrees|disagrees|ambiguous|unverifiable|irrelevant|unknown|support|supports|refute|refutes|contradict|contradicts)\b",
+        response_text,
+        flags=re.IGNORECASE,
+    )
+    if decision_match:
+        decision = _normalize_decision(decision_match.group(1))
+    elif lines:
+        decision = _normalize_decision(lines[-1])
+    else:
+        decision = "unverifiable"
+        if not reason:
+            reason = "Failed to parse."
+
+    is_open = decision == "agrees"
     return is_open, reason, decision
 
 
@@ -74,6 +112,23 @@ def run_agreement_gate(
     Returns:
         gate: A dictionary with the status of the gate and reasoning for decision.
     """
+    claim = _clip_text(
+        claim,
+        _get_int_env("RARR_MAX_GATE_CLAIM_CHARS", DEFAULT_MAX_GATE_CLAIM_CHARS, 240),
+    )
+    query = _clip_text(
+        query,
+        _get_int_env("RARR_MAX_GATE_QUERY_CHARS", DEFAULT_MAX_GATE_QUERY_CHARS, 64),
+    )
+    evidence = _clip_text(
+        evidence,
+        _get_int_env("RARR_MAX_GATE_EVIDENCE_CHARS", DEFAULT_MAX_GATE_EVIDENCE_CHARS, 256),
+    )
+    structural_context = _clip_text(
+        structural_context,
+        _get_int_env("RARR_MAX_GATE_STRUCTURAL_CHARS", DEFAULT_MAX_GATE_STRUCTURAL_CHARS, 128),
+    )
+
     if context:
         gpt3_input = prompt.format(
             context=context,
@@ -95,12 +150,34 @@ def run_agreement_gate(
         model=model,
         temperature=0.0,
         max_tokens=256,
-        stop=["\n\n"],
         num_retries=num_retries,
         waiting=2.0,
         logit_bias={"50256": -100},
     )
 
+    # Some completion models emit leading newlines; avoid collapsing to an empty parse.
+    if not (response_text or "").strip():
+        fallback_input = (
+            gpt3_input
+            + "\n\nRespond with exactly one line in this format: "
+            + "Label: agrees|disagrees|ambiguous|unverifiable"
+        )
+        response_text = completion_text(
+            fallback_input,
+            model=model,
+            temperature=0.0,
+            max_tokens=64,
+            num_retries=max(1, num_retries),
+            waiting=2.0,
+            logit_bias={"50256": -100},
+        )
+
     is_open, reason, decision = parse_api_response(response_text)
-    gate = {"is_open": is_open, "reason": reason, "decision": decision}
+    gate = {
+        "is_open": is_open,
+        "reason": reason,
+        "decision": decision,
+        "raw_response": response_text,
+        "prompt_input": gpt3_input,
+    }
     return gate

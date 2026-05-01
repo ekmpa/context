@@ -1,7 +1,9 @@
 """Utils for searching a query and returning top passages from search results."""
 import concurrent.futures
+import csv
 import itertools
 import json
+import logging
 import os
 import random
 import subprocess
@@ -35,6 +37,32 @@ STRUCTURAL_MONTH_ORDER = (
 STRUCTURAL_CACHE: Dict[str, str] = {}
 STRUCTURAL_CACHE_LOADED = False
 STRUCTURAL_CACHE_DIRTY = False
+SEARCH_STATS: Dict[str, int] = {
+    "search_timeouts": 0,
+    "serper_timeout_fallback_to_ddg": 0,
+    "provider_failures": 0,
+    "queries_with_no_results": 0,
+}
+THIRD_PARTY_RATINGS: Dict[str, Dict[str, float]] = {}
+THIRD_PARTY_RATINGS_LOADED = False
+logger = logging.getLogger(__name__)
+
+
+def _record_search_stat(key: str, value: int = 1) -> None:
+    SEARCH_STATS[key] = SEARCH_STATS.get(key, 0) + value
+
+
+def reset_search_stats() -> None:
+    for key in list(SEARCH_STATS.keys()):
+        SEARCH_STATS[key] = 0
+
+
+def get_search_stats() -> Dict[str, int]:
+    return dict(SEARCH_STATS)
+
+
+def _is_timeout_exception(exc: Exception) -> bool:
+    return isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ReadTimeout))
 
 
 def _structural_enabled() -> bool:
@@ -46,11 +74,105 @@ def _structural_enabled() -> bool:
     }
 
 
+def _condition_mode() -> str:
+    mode = os.getenv("RARR_CONDITION", "").strip().lower()
+    if mode in {"raw", "structural", "third-party", "third_party"}:
+        return "third-party" if mode == "third_party" else mode
+    if _structural_enabled():
+        return "structural"
+    return "raw"
+
+
+def _is_missing_text(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in {"", "na", "none", "null", "nan", "n/a"}
+
+
 def _extract_domain(url: str) -> str:
-    host = (urlparse(url).netloc or "").split(":")[0].strip().lower()
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").split(":")[0].strip().lower()
+    if not host:
+        # Allow plain domains without scheme, e.g. "reuters.com".
+        host = (parsed.path or "").split("/")[0].split(":")[0].strip().lower()
     if host.startswith("www."):
         host = host[4:]
     return host
+
+
+def _third_party_ratings_path() -> str:
+    configured = os.getenv("RARR_THIRD_PARTY_RATINGS_FILE", "").strip()
+    if configured:
+        return configured
+    return str(Path(__file__).resolve().parents[3] / "data" / "domain_ratings.csv")
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if _is_missing_text(value):
+            return None
+        return float(str(value).strip())
+    except Exception:
+        return None
+
+
+def _load_third_party_ratings() -> None:
+    global THIRD_PARTY_RATINGS_LOADED
+    if THIRD_PARTY_RATINGS_LOADED:
+        return
+    THIRD_PARTY_RATINGS_LOADED = True
+
+    ratings_file = _third_party_ratings_path()
+    if not os.path.isfile(ratings_file):
+        logger.warning("[search] third-party ratings file not found: %s", ratings_file)
+        return
+
+    try:
+        with open(ratings_file, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                domain = _extract_domain(str(row.get("domain", "")))
+                if not domain:
+                    continue
+                pc1 = _safe_float(row.get("pc1"))
+                afm_bias = _safe_float(row.get("afm_bias"))
+                mbfc_bias = _safe_float(row.get("mbfc_bias"))
+                if afm_bias is not None and mbfc_bias is not None:
+                    bias_score = (afm_bias + mbfc_bias) / 2.0
+                elif afm_bias is not None:
+                    bias_score = afm_bias
+                elif mbfc_bias is not None:
+                    bias_score = mbfc_bias
+                else:
+                    bias_score = None
+
+                THIRD_PARTY_RATINGS[domain] = {
+                    "pc1": pc1,
+                    "bias_score": bias_score,
+                }
+    except Exception as exc:
+        logger.warning("[search] failed to load third-party ratings file %s: %s", ratings_file, exc)
+
+
+def _lookup_third_party_context(domain: str) -> str:
+    if not domain:
+        return ""
+    _load_third_party_ratings()
+
+    scores = THIRD_PARTY_RATINGS.get(domain)
+    if not scores:
+        return ""
+
+    reliability_score = scores.get("pc1")
+    if reliability_score is None:
+        # Missing scores should behave like raw mode (no extra context appended).
+        return ""
+
+    return (
+        f"Source note: '{domain}' has a trust score of {reliability_score:.4f} "
+        f"(scores span [0,1], higher is better)."
+    )
 
 
 def _format_structural_context(domain: str, payload: Any) -> str:
@@ -217,7 +339,7 @@ def chunk_text(
         for idx in range(0, len(sents), sliding_distance):
             passages.append(" ".join(sents[idx : idx + sentences_per_passage]))
     except UnicodeEncodeError as _:  # Sometimes run into Unicode error when tokenizing.
-        print("Unicode error when using Spacy. Skipping text.")
+        print("spaCy could not read this text cleanly, so it will be skipped.")
 
     return passages
 
@@ -279,7 +401,7 @@ def search_serper(query: str, timeout: float = 3) -> List[str]:
     """Searches the query using Serper (Google Search API wrapper)."""
     api_key = os.getenv("SERPER_API_KEY")
     if not api_key:
-        raise ValueError("SERPER_API_KEY is required for serper search provider")
+        raise ValueError("Set SERPER_API_KEY before using the serper search provider.")
 
     headers = {
         "X-API-KEY": api_key,
@@ -330,9 +452,38 @@ def search_web(query: str, timeout: float = 3) -> List[str]:
     provider = os.getenv("RARR_SEARCH_PROVIDER", "serper").strip().lower()
 
     if provider == "serper":
-        return search_serper(query, timeout=timeout)
+        try:
+            return search_serper(query, timeout=timeout)
+        except Exception as exc:
+            if _is_timeout_exception(exc):
+                _record_search_stat("search_timeouts")
+                _record_search_stat("serper_timeout_fallback_to_ddg")
+                try:
+                    logger.warning(
+                        "[search] Serper timed out for query %r; trying DuckDuckGo instead.",
+                        query,
+                    )
+                    return search_duckduckgo(query, timeout=timeout)
+                except Exception as ddg_exc:
+                    _record_search_stat("provider_failures")
+                    logger.warning(
+                        "[search] DuckDuckGo also failed after the Serper timeout for query %r: %s",
+                        query,
+                        ddg_exc,
+                    )
+                    return []
+            _record_search_stat("provider_failures")
+            raise
     if provider == "duckduckgo":
-        return search_duckduckgo(query, timeout=timeout)
+        try:
+            return search_duckduckgo(query, timeout=timeout)
+        except Exception as exc:
+            if _is_timeout_exception(exc):
+                _record_search_stat("search_timeouts")
+                logger.warning("[search] DuckDuckGo timed out for query %r.", query)
+                return []
+            _record_search_stat("provider_failures")
+            raise
 
     errors = []
     for fn in (search_serper, search_duckduckgo):
@@ -341,11 +492,16 @@ def search_web(query: str, timeout: float = 3) -> List[str]:
             if results:
                 return results
         except Exception as exc:
+            if _is_timeout_exception(exc):
+                _record_search_stat("search_timeouts")
+                if fn is search_serper:
+                    _record_search_stat("serper_timeout_fallback_to_ddg")
+            _record_search_stat("provider_failures")
             errors.append(f"{fn.__name__}: {exc}")
 
     raise RuntimeError(
-        "No search provider succeeded. "
-        + (" | ".join(errors) if errors else "No providers available")
+        "All configured search providers failed. "
+        + (" | ".join(errors) if errors else "No providers were available.")
     )
 
 
@@ -377,10 +533,25 @@ def run_search(
     Returns:
         retrieved_passages: Top retrieved passages for the search query.
     """
+    if _is_missing_text(query):
+        _record_search_stat("queries_with_no_results")
+        return []
+
+    query = str(query).strip()
+
     if cached_search_results is not None:
         search_results = cached_search_results
     else:
-        search_results = search_web(query, timeout=timeout)
+        try:
+            search_results = search_web(query, timeout=timeout)
+        except Exception as exc:
+            _record_search_stat("provider_failures")
+            logger.warning("[search] Search failed for query %r: %s", query, exc)
+            return []
+
+    if not search_results:
+        _record_search_stat("queries_with_no_results")
+        return []
 
     # Scrape search results in parallel
     with concurrent.futures.ThreadPoolExecutor() as e:
@@ -390,10 +561,17 @@ def run_search(
 
     # Iterate through the scraped results and extract out the most useful passages.
     retrieved_passages = []
+    mode = _condition_mode()
     for webtext, url in scraped_results[:max_search_results_per_query]:
         structural_context = ""
-        if _structural_enabled():
-            structural_context = _lookup_structural_context(_extract_domain(url), timeout=timeout)
+        domain = _extract_domain(url)
+        if mode == "structural":
+            structural_context = _lookup_structural_context(domain, timeout=timeout)
+        elif mode == "third-party":
+            structural_context = _lookup_third_party_context(domain)
+            _record_search_stat("third_party_evidence_total")
+            if structural_context:
+                _record_search_stat("third_party_evidence_scored")
 
         if randomize_num_sentences:
             sents_per_passage = random.randint(1, max_sentences_per_passage)
