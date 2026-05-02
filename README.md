@@ -13,7 +13,7 @@ On:
 
 This repo uses uv, set it up with `uv sync` and install additional dependencies with `uv add [...]`.
 
-## Running pipeline 
+## Fact-checking pipeline 
 
 ### Raw
 
@@ -34,7 +34,7 @@ The default scores used are from [DQR] and can be found under the `data` folder.
 
 ### With structural information 
 
-The structural information retrieved displays the domain's 1- and 2-hop neighbors from [CrediBench] using the hook in `scripts/hook.py`. 
+The structural information retrieved displays the domain's 1- and 2-hop neighbors from [CrediBench] using the hook in `scripts/hook.py`. The first run will need to first build the webgraph shards so may take longer. 
 
 ```bash
 cd context
@@ -47,3 +47,17 @@ uv run python scripts/run_rarr_eval.py \
 	--hf-split train \
 	my-struct-run 100
 ```
+
+## Data Analysis
+
+To run benchmark analyses, set these parameters in `analyze.sh`:
+
+```bash
+DATASET="liar"
+JUDGE="gpt-5-mini"
+# JUDGE="Qwen/Qwen2.5-7B-Instruct"
+CONDITION="ambig" # none | conflict | stale | opinion | unverif | ambig
+THIRD_PARTY_RATINGS_FILE="data/domain_ratings.csv"
+```
+
+and `bash/sbatch analyze.sh`
