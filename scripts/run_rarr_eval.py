@@ -122,6 +122,22 @@ def _resolve_runtime_hyperparameters(
     return max(1, int(resolved_rounds)), max(1, int(resolved_evidences))
 
 
+def _parse_optional_max_rows(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+
+    text = str(value).strip().lower()
+    if text in {"", "none", "all", "null"}:
+        return None
+
+    parsed = int(text)
+    if parsed < 1:
+        raise ValueError("--max-rows must be a positive integer or one of: none, all")
+    return parsed
+
+
 def _python_path_setup() -> None:
     if str(SCRIPTS_DIR) not in sys.path:
         sys.path.insert(0, str(SCRIPTS_DIR))
@@ -137,14 +153,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-rows",
         dest="max_rows_flag",
-        type=int,
+        type=str,
         default=None,
         help="Max rows to evaluate (named flag, preferred for scripting)",
     )
 
     parser.add_argument(
         "--condition",
-        choices=["raw", "structural", "third-party"],
+        choices=["raw", "structural", "third-party", "source_attr"],
         default=os.getenv("RARR_CONDITION", "raw"),
         help="Run mode: raw (web only), structural (web + graph context), or third-party (web + domain ratings)",
     )
@@ -288,6 +304,7 @@ def _configure_condition_environment(args: argparse.Namespace) -> str:
     os.environ["RARR_CONDITION"] = condition
     os.environ["RARR_STRUCTURAL_MODE"] = "1" if condition == "structural" else "0"
     os.environ["RARR_THIRD_PARTY_MODE"] = "1" if condition == "third-party" else "0"
+    os.environ["RARR_SOURCE_ATTR_MODE"] = "1" if condition == "source_attr" else "0"
     if condition == "third-party":
         os.environ["RARR_THIRD_PARTY_RATINGS_FILE"] = str(Path(args.third_party_ratings_file).resolve())
     return condition
@@ -641,21 +658,45 @@ def _model_report_identity(config_path: Path) -> tuple[str, dict]:
     }
 
 
-def _build_meta_eval(
-    *,
-    run_id: str,
-    dataset_name: str,
-    hf_split: str,
-    model_id: str,
-    model_info: dict,
-    labels: list[str] | None,
-    label_audit: dict | None,
-    entries: list[dict],
-    search_stats: dict | None = None,
-) -> dict:
-    prediction_options = ["true", "false", "unverifiable", "ambiguous"]
-    gold_options = ["true", "false", "unverified"]
+def _entry_evidence_count_and_third_party_coverage(entry: dict) -> tuple[int, bool]:
+    detail = entry.get("detail", [])
+    if not isinstance(detail, list):
+        return 0, False
 
+    evidence_count = 0
+    has_third_party_coverage = False
+    for claim_detail in detail:
+        if not isinstance(claim_detail, dict):
+            continue
+        evidences = claim_detail.get("evidences", [])
+        if not isinstance(evidences, list):
+            continue
+        evidence_count += len(evidences)
+
+        for evidence_item in evidences:
+            structural_context = ""
+            if isinstance(evidence_item, (list, tuple)) and len(evidence_item) > 2:
+                structural_context = str(evidence_item[2] or "").strip()
+            elif isinstance(evidence_item, dict):
+                structural_context = str(evidence_item.get("structural_context", "") or "").strip()
+
+            if structural_context:
+                has_third_party_coverage = True
+                break
+
+        if has_third_party_coverage:
+            break
+
+    return evidence_count, has_third_party_coverage
+
+
+def _compute_eval_slice(
+    *,
+    entries: list[dict],
+    labels: list[str] | None,
+    prediction_options: list[str],
+    gold_options: list[str],
+) -> dict:
     matrix = {gold: {pred: 0 for pred in prediction_options} for gold in gold_options}
     rows_scored = 0
     correct = 0
@@ -664,20 +705,14 @@ def _build_meta_eval(
 
     for idx, entry in enumerate(entries):
         pred_bucket = entry.get("pred_bucket", "unverifiable")
-        detail = entry.get("detail", [])
-        if isinstance(detail, list):
-            evidence_count = 0
-            for claim_detail in detail:
-                if not isinstance(claim_detail, dict):
-                    continue
-                evidences = claim_detail.get("evidences", [])
-                if isinstance(evidences, list):
-                    evidence_count += len(evidences)
-            total_evidence_count += evidence_count
+        evidence_count, _ = _entry_evidence_count_and_third_party_coverage(entry)
+        total_evidence_count += evidence_count
+        if isinstance(entry.get("detail", None), list):
             entries_with_detail += 1
 
         if labels is None or idx >= len(labels):
             continue
+
         gold = labels[idx] if labels[idx] in gold_options else "unverified"
         if pred_bucket not in prediction_options:
             pred_bucket = "ambiguous"
@@ -689,28 +724,84 @@ def _build_meta_eval(
             correct += 1
 
     return {
+        "rows_total": len(entries),
+        "rows_scored": rows_scored,
+        "accuracy": (correct / rows_scored) if rows_scored else None,
+        "avg_evidence_per_row": (total_evidence_count / len(entries) if entries else 0.0),
+        "avg_evidence_per_benchmark_query": (total_evidence_count / len(entries) if entries else 0.0),
+        "avg_evidence_per_row_with_detail": (
+            total_evidence_count / entries_with_detail if entries_with_detail else 0.0
+        ),
+        "total_evidence_retrieved": total_evidence_count,
+        "per_category_prediction_counts": matrix,
+    }
+
+
+def _build_meta_eval(
+    *,
+    run_id: str,
+    dataset_name: str,
+    hf_split: str,
+    model_id: str,
+    model_info: dict,
+    condition: str,
+    labels: list[str] | None,
+    label_audit: dict | None,
+    entries: list[dict],
+    search_stats: dict | None = None,
+) -> dict:
+    prediction_options = ["true", "false", "unverifiable", "ambiguous"]
+    gold_options = ["true", "false", "unverified"]
+
+    total_metrics = _compute_eval_slice(
+        entries=entries,
+        labels=labels,
+        prediction_options=prediction_options,
+        gold_options=gold_options,
+    )
+
+    third_party_meta = None
+    if condition == "third-party":
+        covered_entries = []
+        covered_labels = [] if labels is not None else None
+        for idx, entry in enumerate(entries):
+            _, covered = _entry_evidence_count_and_third_party_coverage(entry)
+            if not covered:
+                continue
+            covered_entries.append(entry)
+            if covered_labels is not None and idx < len(labels):
+                covered_labels.append(labels[idx])
+
+        covered_metrics = _compute_eval_slice(
+            entries=covered_entries,
+            labels=covered_labels,
+            prediction_options=prediction_options,
+            gold_options=gold_options,
+        )
+        third_party_meta = {
+            "rows_with_scored_domain": len(covered_entries),
+            "rows_without_scored_domain": len(entries) - len(covered_entries),
+            "covered_only_eval": covered_metrics,
+        }
+
+    return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "run_id": run_id,
         "dataset": dataset_name,
         "split": hf_split,
         "model_id": model_id,
         "model": model_info,
-        "rows_total": len(entries),
-        "rows_scored": rows_scored,
-        "accuracy": (correct / rows_scored) if rows_scored else None,
-        "avg_evidence_per_row": (
-            total_evidence_count / len(entries) if entries else 0.0
-        ),
-        "avg_evidence_per_benchmark_query": (
-            total_evidence_count / len(entries) if entries else 0.0
-        ),
-        "avg_evidence_per_row_with_detail": (
-            total_evidence_count / entries_with_detail if entries_with_detail else 0.0
-        ),
-        "total_evidence_retrieved": total_evidence_count,
+        "rows_total": total_metrics["rows_total"],
+        "rows_scored": total_metrics["rows_scored"],
+        "accuracy": total_metrics["accuracy"],
+        "avg_evidence_per_row": total_metrics["avg_evidence_per_row"],
+        "avg_evidence_per_benchmark_query": total_metrics["avg_evidence_per_benchmark_query"],
+        "avg_evidence_per_row_with_detail": total_metrics["avg_evidence_per_row_with_detail"],
+        "total_evidence_retrieved": total_metrics["total_evidence_retrieved"],
         "search_stats": search_stats or {},
-        "per_category_prediction_counts": matrix,
+        "per_category_prediction_counts": total_metrics["per_category_prediction_counts"],
         "label_audit": label_audit,
+        "third_party": third_party_meta,
     }
 
 
@@ -721,6 +812,7 @@ def _write_compact_eval_reports(
     dataset_name: str,
     hf_split: str,
     config_path: Path,
+    condition: str,
     labels: list[str] | None,
     label_audit: dict | None,
     entries: list[dict],
@@ -750,6 +842,7 @@ def _write_compact_eval_reports(
         hf_split=hf_split,
         model_id=model_id,
         model_info=model_info,
+        condition=condition,
         labels=labels,
         label_audit=label_audit,
         entries=entries,
@@ -875,7 +968,7 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("Provide a dataset path unless you are using --hf-dataset")
 
     run_id = args.run_id or _default_run_id(args.hf_dataset)
-    max_rows = args.max_rows if args.max_rows is not None else args.max_rows_flag
+    max_rows = args.max_rows if args.max_rows is not None else _parse_optional_max_rows(args.max_rows_flag)
     max_rows_display = "all" if max_rows is None else str(int(max_rows))
 
     print(
@@ -1024,6 +1117,7 @@ def run(args: argparse.Namespace) -> None:
         dataset_name=args.hf_dataset or dataset_name,
         hf_split=args.hf_split,
         config_path=Path(solver_args.config),
+        condition=resolved_condition,
         labels=labels,
         label_audit=label_audit,
         entries=entries,
@@ -1060,6 +1154,16 @@ def run(args: argparse.Namespace) -> None:
     tp_scored = ss.get("third_party_evidence_scored", 0)
     if tp_total > 0:
         print(f"  third-party score coverage: {tp_scored}/{tp_total} ({100.0 * tp_scored / tp_total:.1f}%)")
+    tp_meta = meta_payload.get("third_party") or {}
+    covered_eval = tp_meta.get("covered_only_eval") if isinstance(tp_meta, dict) else None
+    if covered_eval:
+        print(
+            "  third-party covered-only eval: "
+            f"rows={covered_eval.get('rows_total', 0)} "
+            f"(covered={tp_meta.get('rows_with_scored_domain', 0)}, "
+            f"uncovered={tp_meta.get('rows_without_scored_domain', 0)}), "
+            f"accuracy={covered_eval.get('accuracy')}"
+        )
 
     if labels is not None:
         print(f"  accuracy: {meta_payload['accuracy']}")

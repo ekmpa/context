@@ -76,8 +76,12 @@ def _structural_enabled() -> bool:
 
 def _condition_mode() -> str:
     mode = os.getenv("RARR_CONDITION", "").strip().lower()
-    if mode in {"raw", "structural", "third-party", "third_party"}:
-        return "third-party" if mode == "third_party" else mode
+    if mode in {"raw", "structural", "third-party", "third_party", "source_attr", "source-attr"}:
+        if mode == "third_party":
+            return "third-party"
+        if mode in {"source_attr", "source-attr"}:
+            return "source_attr"
+        return mode
     if _structural_enabled():
         return "structural"
     return "raw"
@@ -153,6 +157,20 @@ def _load_third_party_ratings() -> None:
                 }
     except Exception as exc:
         logger.warning("[search] failed to load third-party ratings file %s: %s", ratings_file, exc)
+
+
+def _format_source_attr_context(domain: str) -> str:
+    """Return a source-attribution prompt fragment for the given domain."""
+    if not domain:
+        return ""
+    return (
+        f"Source attribution note for '{domain}': "
+        "Consider the following when evaluating this evidence (in your reasoning; but don't include in your response!): "
+        "(1) Who is behind this domain and in what context did they publish this? "
+        "(2) Is this a primary or secondary source on this topic? "
+        "(3) Does this source have a plausible conflict of interest on this topic? "
+        "(4) What type of outlet is it?"
+    )
 
 
 def _lookup_third_party_context(domain: str) -> str:
@@ -458,22 +476,30 @@ def search_web(query: str, timeout: float = 3) -> List[str]:
             if _is_timeout_exception(exc):
                 _record_search_stat("search_timeouts")
                 _record_search_stat("serper_timeout_fallback_to_ddg")
-                try:
-                    logger.warning(
-                        "[search] Serper timed out for query %r; trying DuckDuckGo instead.",
-                        query,
-                    )
-                    return search_duckduckgo(query, timeout=timeout)
-                except Exception as ddg_exc:
-                    _record_search_stat("provider_failures")
-                    logger.warning(
-                        "[search] DuckDuckGo also failed after the Serper timeout for query %r: %s",
-                        query,
-                        ddg_exc,
-                    )
-                    return []
-            _record_search_stat("provider_failures")
-            raise
+                logger.warning(
+                    "[search] Serper timed out for query %r; trying DuckDuckGo instead.",
+                    query,
+                )
+            else:
+                _record_search_stat("provider_failures")
+                logger.warning(
+                    "[search] Serper failed for query %r: %s. Trying DuckDuckGo instead.",
+                    query,
+                    exc,
+                )
+
+            try:
+                return search_duckduckgo(query, timeout=timeout)
+            except Exception as ddg_exc:
+                if _is_timeout_exception(ddg_exc):
+                    _record_search_stat("search_timeouts")
+                _record_search_stat("provider_failures")
+                logger.warning(
+                    "[search] DuckDuckGo failed after Serper failure for query %r: %s",
+                    query,
+                    ddg_exc,
+                )
+                return []
     if provider == "duckduckgo":
         try:
             return search_duckduckgo(query, timeout=timeout)
@@ -572,6 +598,8 @@ def run_search(
             _record_search_stat("third_party_evidence_total")
             if structural_context:
                 _record_search_stat("third_party_evidence_scored")
+        elif mode == "source_attr":
+            structural_context = _format_source_attr_context(domain)
 
         if randomize_num_sentences:
             sents_per_passage = random.randint(1, max_sentences_per_passage)

@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 import importlib
 from typing import Iterable
 
@@ -8,6 +9,7 @@ import openai
 from openai import OpenAI
 
 _CLIENT = None
+_CHAT_CAPABILITIES: dict[str, dict[str, bool]] = {}
 
 
 def _backend() -> str:
@@ -41,6 +43,96 @@ def _is_context_length_error(exc: openai.OpenAIError) -> bool:
     return "maximum context length" in text or "context length" in text
 
 
+def _is_chat_only_completion_endpoint_error(exc: openai.OpenAIError) -> bool:
+    text = str(exc).lower()
+    return (
+        "chat model" in text
+        and "not supported in the v1/completions endpoint" in text
+    )
+
+
+def _is_unsupported_parameter_error(exc: openai.OpenAIError, param_name: str) -> bool:
+    text = str(exc).lower()
+    return "unsupported parameter" in text and f"'{param_name.lower()}'" in text
+
+
+def _is_unsupported_temperature_value_error(exc: openai.OpenAIError) -> bool:
+    text = str(exc).lower()
+    return "unsupported value" in text and "'temperature'" in text
+
+
+def _get_chat_capabilities(model: str) -> dict[str, bool]:
+    caps = _CHAT_CAPABILITIES.get(model)
+    if caps is None:
+        caps = {
+            "supports_temperature": True,
+            "supports_max_tokens": True,
+        }
+        _CHAT_CAPABILITIES[model] = caps
+    return caps
+
+
+def _chat_completion_with_fallbacks(
+    *,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    stop: Iterable[str] | None = None,
+    max_tokens: int | None = None,
+):
+    client = _get_client()
+    caps = _get_chat_capabilities(model)
+    base_kwargs = {
+        "model": model,
+        "messages": messages,
+        "stop": list(stop) if stop is not None else None,
+    }
+
+    attempts = []
+    if max_tokens is None:
+        temperature_modes = [True, False] if caps["supports_temperature"] else [False]
+        attempts = [{"use_temperature": mode} for mode in temperature_modes]
+    else:
+        token_fields = ["max_tokens", "max_completion_tokens"]
+        if not caps["supports_max_tokens"]:
+            token_fields = ["max_completion_tokens", "max_tokens"]
+
+        temperature_modes = [True, False] if caps["supports_temperature"] else [False]
+        for token_field in token_fields:
+            for mode in temperature_modes:
+                attempts.append({"token_field": token_field, "use_temperature": mode})
+
+    last_exc = None
+    for attempt in attempts:
+        kwargs = dict(base_kwargs)
+        if attempt.get("use_temperature", False):
+            kwargs["temperature"] = temperature
+        token_field = attempt.get("token_field")
+        if token_field is not None and max_tokens is not None:
+            kwargs[token_field] = max_tokens
+
+        try:
+            response = client.chat.completions.create(**kwargs)
+            if token_field == "max_tokens":
+                caps["supports_max_tokens"] = True
+            if attempt.get("use_temperature", False):
+                caps["supports_temperature"] = True
+            return response
+        except openai.OpenAIError as exc:
+            last_exc = exc
+            if _is_unsupported_temperature_value_error(exc):
+                caps["supports_temperature"] = False
+                continue
+            if token_field == "max_tokens" and _is_unsupported_parameter_error(exc, "max_tokens"):
+                caps["supports_max_tokens"] = False
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("LLM chat completion failed before any attempt")
+
+
 def _parse_retry_after_seconds(message: str) -> float | None:
     # OpenAI errors often include: "Please try again in 1.824s" or "73ms".
     match = re.search(r"try again in\s+([0-9]*\.?[0-9]+)\s*(ms|s)", message, flags=re.IGNORECASE)
@@ -51,6 +143,28 @@ def _parse_retry_after_seconds(message: str) -> float | None:
     if unit == "ms":
         return max(0.0, value / 1000.0)
     return max(0.0, value)
+
+
+def _compute_retry_wait_seconds(
+    *,
+    attempt: int,
+    base_wait: float,
+    message: str,
+    consecutive_rate_limits: int,
+) -> float:
+    # Apply exponential backoff with jitter, and cool down more aggressively
+    # when a burst of consecutive rate-limit errors is detected.
+    retry_wait = max(base_wait, base_wait * (2 ** max(0, attempt - 1)))
+    lowered = message.lower()
+    if "rate limit" in lowered:
+        parsed_wait = _parse_retry_after_seconds(message)
+        if parsed_wait is not None:
+            retry_wait = max(retry_wait, parsed_wait + 0.2)
+        if consecutive_rate_limits > 1:
+            retry_wait = max(retry_wait, base_wait * (2 ** min(consecutive_rate_limits, 6)))
+
+    jitter = random.uniform(0.0, max(0.05, retry_wait * 0.15))
+    return min(retry_wait + jitter, 30.0)
 
 
 def _messages_to_text(messages: list[dict]) -> str:
@@ -104,7 +218,8 @@ def chat_text(
         query_qwen = _load_qwen_query_fn()
         return query_qwen(model.strip(), prompt)
 
-    for _ in range(num_retries):
+    consecutive_rate_limits = 0
+    for attempt in range(1, num_retries + 1):
         try:
             if isinstance(user_inputs, str):
                 chat_histories = [{"role": "user", "content": user_inputs}]
@@ -122,10 +237,12 @@ def chat_text(
                 raise ValueError("Invalid input for LLM chat call")
 
             messages = [{"role": "system", "content": system_role}] + chat_histories
-            response = _get_client().chat.completions.create(
+            response = _chat_completion_with_fallbacks(
                 model=model,
                 messages=messages,
                 temperature=temperature,
+                stop=None,
+                max_tokens=None,
             )
             return "".join(choice.message.content or "" for choice in response.choices)
         except openai.OpenAIError as exc:
@@ -134,8 +251,29 @@ def chat_text(
                     "OpenAI backend rejected the model id. "
                     "If using Hugging Face models like Qwen/*, set CONTEXT_LLM_BACKEND=hf-local."
                 ) from exc
-            print(f"{exc}. Retrying...")
-            time.sleep(waiting)
+            if _is_context_length_error(exc):
+                raise RuntimeError("LLM prompt exceeds model context window") from exc
+
+            message = str(exc)
+            if "rate limit" in message.lower():
+                consecutive_rate_limits += 1
+            else:
+                consecutive_rate_limits = 0
+
+            if attempt == num_retries:
+                break
+
+            retry_wait = _compute_retry_wait_seconds(
+                attempt=attempt,
+                base_wait=waiting,
+                message=message,
+                consecutive_rate_limits=consecutive_rate_limits,
+            )
+            print(
+                f"{exc}. Retrying in {retry_wait:.2f}s "
+                f"(attempt {attempt + 1}/{num_retries})..."
+            )
+            time.sleep(retry_wait)
     raise RuntimeError("LLM chat call failed after retries")
 
 
@@ -163,7 +301,8 @@ def completion_text(
                 text = text[:cutoff]
         return text
 
-    for _ in range(num_retries):
+    consecutive_rate_limits = 0
+    for attempt in range(1, num_retries + 1):
         try:
             response = _get_client().completions.create(
                 model=model,
@@ -175,6 +314,20 @@ def completion_text(
             )
             return response.choices[0].text or ""
         except openai.OpenAIError as exc:
+            if _is_chat_only_completion_endpoint_error(exc):
+                # Some OpenAI models (for example gpt-4.1-mini) are chat-only.
+                # If a caller asks completion_text() with one of these models,
+                # fall back to the chat endpoint using the prompt as a user turn.
+                chat_response = _chat_completion_with_fallbacks(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    stop=stop,
+                    max_tokens=max_tokens,
+                )
+
+                return "".join(choice.message.content or "" for choice in chat_response.choices)
+
             if _is_invalid_model_error(exc):
                 raise RuntimeError(
                     "OpenAI backend rejected the model id. "
@@ -184,13 +337,24 @@ def completion_text(
                 raise RuntimeError("LLM prompt exceeds model context window") from exc
 
             message = str(exc)
-            retry_wait = waiting
             if "rate limit" in message.lower():
-                parsed_wait = _parse_retry_after_seconds(message)
-                if parsed_wait is not None:
-                    # Add a tiny buffer to avoid retrying before the bucket resets.
-                    retry_wait = max(waiting, parsed_wait + 0.05)
+                consecutive_rate_limits += 1
+            else:
+                consecutive_rate_limits = 0
 
-            print(f"{exc}. Retrying...")
+            if attempt == num_retries:
+                break
+
+            retry_wait = _compute_retry_wait_seconds(
+                attempt=attempt,
+                base_wait=waiting,
+                message=message,
+                consecutive_rate_limits=consecutive_rate_limits,
+            )
+
+            print(
+                f"{exc}. Retrying in {retry_wait:.2f}s "
+                f"(attempt {attempt + 1}/{num_retries})..."
+            )
             time.sleep(retry_wait)
     raise RuntimeError("LLM completion call failed after retries")

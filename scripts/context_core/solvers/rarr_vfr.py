@@ -1,4 +1,6 @@
 import logging
+import os
+import concurrent.futures
 
 from context_core.core.fact_check_state import FactCheckerState
 from context_core.core.task_solver import StandardTaskSolver
@@ -13,6 +15,11 @@ class RARRAgreementGate(StandardTaskSolver):
         super().__init__(args)
         self.max_evidences_per_question = args.get("max_evidences_per_question", 1)
         self.model = self.global_config.get("rarr_model", "text-davinci-003")
+        raw_workers = str(args.get("gate_workers", os.getenv("RARR_GATE_WORKERS", "1"))).strip()
+        try:
+            self.gate_workers = max(1, int(raw_workers))
+        except Exception:
+            self.gate_workers = 1
 
     def __call__(self, state: FactCheckerState, *args, **kwargs):
         claims_with_evidences = state.get(self.input_name)
@@ -22,7 +29,8 @@ class RARRAgreementGate(StandardTaskSolver):
             evidences = evidences[:self.max_evidences_per_question]
             decisions = []
             gate_debug = []
-            for evidence_item in evidences:
+
+            def _evaluate_evidence(evidence_item):
                 if len(evidence_item) >= 3:
                     query, evidence, structural_context = evidence_item[0], evidence_item[1], evidence_item[2]
                 else:
@@ -47,16 +55,31 @@ class RARRAgreementGate(StandardTaskSolver):
                         "raw_response": "",
                         "prompt_input": "",
                     }
-                decisions.append(gate["decision"])
-                gate_debug.append(
-                    {
+                return {
+                    "decision": gate["decision"],
+                    "debug": {
                         "query": query,
                         "decision": gate.get("decision"),
                         "reason": gate.get("reason"),
                         "raw_response": gate.get("raw_response", ""),
                         "prompt_input": gate.get("prompt_input", ""),
-                    }
-                )
+                    },
+                }
+
+            if self.gate_workers <= 1 or len(evidences) <= 1:
+                for evidence_item in evidences:
+                    gate_out = _evaluate_evidence(evidence_item)
+                    decisions.append(gate_out["decision"])
+                    gate_debug.append(gate_out["debug"])
+            else:
+                max_workers = min(self.gate_workers, len(evidences))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = [pool.submit(_evaluate_evidence, evidence_item) for evidence_item in evidences]
+                    for fut in futures:
+                        gate_out = fut.result()
+                        decisions.append(gate_out["decision"])
+                        gate_debug.append(gate_out["debug"])
+
             result['claim'] = claim
             result['evidences'] = evidences
             result['labels'] = decisions

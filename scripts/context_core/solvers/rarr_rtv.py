@@ -1,5 +1,6 @@
 import logging
 import os
+import concurrent.futures
 
 from context_core.core.fact_check_state import FactCheckerState
 from context_core.core.task_solver import StandardTaskSolver
@@ -10,6 +11,14 @@ from context_core.utils import search
 
 
 DEFAULT_MAX_CLAIM_CHARS = 2000
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return max(minimum, int(raw))
+    except Exception:
+        return default
 
 
 def _max_claim_chars() -> int:
@@ -46,6 +55,10 @@ class RARRRetriever(StandardTaskSolver):
         self.max_sentences_per_passage = args.get("max_sentences_per_passage", 4)
         self.sliding_distance = args.get("sliding_distance", 1)
         self.max_passages_per_search_result = args.get("max_passages_per_search_result", 1)
+        self.query_workers = max(
+            1,
+            int(args.get("query_workers", _env_int("RARR_QUERY_WORKERS", 1))),
+        )
 
     def __call__(self, state: FactCheckerState, *args, **kwargs):
         claims_input = state.get(self.input_name)
@@ -91,20 +104,48 @@ class RARRRetriever(StandardTaskSolver):
                 questions = [claim_for_qgen]
 
             evidences = []
-            for question in questions:
-                q_evidences = search.run_search(
-                    query=question,
-                    max_search_results_per_query=self.max_search_results_per_query,
-                    max_sentences_per_passage=self.max_sentences_per_passage,
-                    sliding_distance=self.sliding_distance,
-                    max_passages_per_search_result_to_return=self.max_passages_per_search_result,
-                )
-                evidences.extend(
-                    [
+            if self.query_workers <= 1 or len(questions) <= 1:
+                for question in questions:
+                    q_evidences = search.run_search(
+                        query=question,
+                        max_search_results_per_query=self.max_search_results_per_query,
+                        max_sentences_per_passage=self.max_sentences_per_passage,
+                        sliding_distance=self.sliding_distance,
+                        max_passages_per_search_result_to_return=self.max_passages_per_search_result,
+                    )
+                    evidences.extend(
+                        [
+                            (question, x["text"], x.get("structural_context", ""))
+                            for x in q_evidences
+                        ]
+                    )
+            else:
+                max_workers = min(self.query_workers, len(questions))
+
+                def _run_one_question(question: str):
+                    q_evidences = search.run_search(
+                        query=question,
+                        max_search_results_per_query=self.max_search_results_per_query,
+                        max_sentences_per_passage=self.max_sentences_per_passage,
+                        sliding_distance=self.sliding_distance,
+                        max_passages_per_search_result_to_return=self.max_passages_per_search_result,
+                    )
+                    return [
                         (question, x["text"], x.get("structural_context", ""))
                         for x in q_evidences
                     ]
-                )
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = [pool.submit(_run_one_question, q) for q in questions]
+                    for question, fut in zip(questions, futures):
+                        try:
+                            evidences.extend(fut.result())
+                        except Exception as exc:
+                            logging.warning(
+                                "[rarr_retriever] parallel search failed; skipping query=%r err=%s",
+                                question,
+                                exc,
+                            )
                
             results[claim] = evidences
 
