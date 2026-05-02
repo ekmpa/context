@@ -164,12 +164,11 @@ def _format_source_attr_context(domain: str) -> str:
     if not domain:
         return ""
     return (
-        f"Source attribution note for '{domain}': "
-        "Consider the following when evaluating this evidence (in your reasoning; but don't include in your response!): "
-        "(1) Who is behind this domain and in what context did they publish this? "
-        "(2) Is this a primary or secondary source on this topic? "
-        "(3) Does this source have a plausible conflict of interest on this topic? "
-        "(4) What type of outlet is it?"
+        f"Source attribution checklist for '{domain}':\n"
+        "- Publisher/Context: who is behind this domain and what is the publication context?\n"
+        "- Source Type: is this a primary source or a secondary source for this claim?\n"
+        "- Conflict of Interest: any plausible stake or incentive that could bias framing?\n"
+        "- Outlet Category: news, government, academic, advocacy, commercial, or social platform?"
     )
 
 

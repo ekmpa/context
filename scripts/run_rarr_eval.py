@@ -496,16 +496,26 @@ def _infer_prediction_bucket_from_state(state: dict) -> str:
             continue
         normalized.extend(_normalize_decision_label(label) for label in labels)
 
-    uniq = set(normalized)
-    if uniq == {"true"}:
+    counts = Counter(normalized)
+    true_count = int(counts.get("true", 0))
+    false_count = int(counts.get("false", 0))
+    ambiguous_count = int(counts.get("ambiguous", 0))
+    unverifiable_count = int(counts.get("unverifiable", 0))
+
+    # If we have any directional evidence, prefer it over neutral labels.
+    if true_count > false_count and true_count > 0:
         return "true"
-    if uniq == {"false"}:
+    if false_count > true_count and false_count > 0:
         return "false"
-    if uniq == {"unverifiable"}:
-        return "unverifiable"
-    if uniq == {"ambiguous"}:
+    if true_count == false_count and true_count > 0:
         return "ambiguous"
-    return "ambiguous"
+
+    # No directional evidence found.
+    if ambiguous_count > 0:
+        return "ambiguous"
+    if unverifiable_count > 0:
+        return "unverifiable"
+    return "unverifiable"
 
 
 def _annotate_eval_entries(entries: list[dict]) -> tuple[dict[int, str], dict[int, str]]:
@@ -625,6 +635,8 @@ def _prepare_solver_config(
     output_dir: Path,
     num_rounds_qgen: int,
     max_evidences_per_question: int,
+    factcheck_model: str = "",
+    rarr_model: str = "",
 ) -> Path:
     try:
         import yaml
@@ -632,9 +644,17 @@ def _prepare_solver_config(
         raise RuntimeError("pyyaml is required to prepare solver config") from exc
 
     payload = _load_model_config(base_config_path)
+    global_config = payload.setdefault("global_config", {})
     solvers = payload.setdefault("solvers", {})
     retriever = solvers.setdefault("rarr_retriever", {})
     verifier = solvers.setdefault("rarr_verifier", {})
+
+    # Respect explicit CLI/env model overrides in the resolved config so both
+    # runtime behavior and model reporting reflect the model actually used.
+    if (factcheck_model or "").strip():
+        global_config["factcheck_gpt_model"] = factcheck_model.strip()
+    if (rarr_model or "").strip():
+        global_config["rarr_model"] = rarr_model.strip()
 
     retriever["num_rounds_qgen"] = max(1, int(num_rounds_qgen))
     verifier["max_evidences_per_question"] = max(1, int(max_evidences_per_question))
@@ -1086,6 +1106,8 @@ def run(args: argparse.Namespace) -> None:
         output_dir=output_dir,
         num_rounds_qgen=resolved_num_rounds_qgen,
         max_evidences_per_question=resolved_max_evidences,
+        factcheck_model=args.factcheck_model,
+        rarr_model=args.rarr_model,
     )
 
     solver_args = argparse.Namespace(

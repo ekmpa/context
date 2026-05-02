@@ -3,13 +3,25 @@ import os
 import re
 from typing import Any, Dict, Tuple
 
-from context_core.llm import completion_text
+from context_core.llm import chat_text, completion_text
 
 
 DEFAULT_MAX_GATE_CLAIM_CHARS = 2000
 DEFAULT_MAX_GATE_QUERY_CHARS = 400
 DEFAULT_MAX_GATE_EVIDENCE_CHARS = 3500
 DEFAULT_MAX_GATE_STRUCTURAL_CHARS = 1000
+
+
+COMPACT_AGREEMENT_GATE_TEMPLATE = """You are a strict fact-checking verifier.
+
+Claim: {claim}
+Search query: {query}
+Evidence snippet: {evidence}
+Source/domain context: {structural_context}
+
+Return exactly one label from:
+agrees | disagrees | ambiguous | unverifiable
+""".strip()
 
 
 def _get_int_env(name: str, default: int, minimum: int) -> int:
@@ -129,7 +141,21 @@ def run_agreement_gate(
         _get_int_env("RARR_MAX_GATE_STRUCTURAL_CHARS", DEFAULT_MAX_GATE_STRUCTURAL_CHARS, 128),
     )
 
-    if context:
+    use_compact_prompt = os.getenv("RARR_USE_COMPACT_GATE_PROMPT", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if use_compact_prompt:
+        gpt3_input = COMPACT_AGREEMENT_GATE_TEMPLATE.format(
+            claim=claim,
+            query=query,
+            evidence=evidence,
+            structural_context=structural_context or "No source/domain context provided.",
+        ).strip()
+    elif context:
         gpt3_input = prompt.format(
             context=context,
             claim=claim,
@@ -145,32 +171,56 @@ def run_agreement_gate(
             structural_context=structural_context or "No structural graph evidence provided.",
         ).strip()
 
-    response_text = completion_text(
-        gpt3_input,
-        model=model,
-        temperature=0.0,
-        max_tokens=256,
-        num_retries=num_retries,
-        waiting=2.0,
-        logit_bias={"50256": -100},
-    )
+    if use_compact_prompt:
+        # Chat-style call is more reliable for modern chat-first models.
+        response_text = chat_text(
+            [{"role": "user", "content": gpt3_input}],
+            model=model,
+            system_role=(
+                "You are a strict fact-checking judge. "
+                "Output exactly one token label: agrees, disagrees, ambiguous, or unverifiable."
+            ),
+            temperature=0.0,
+            num_retries=num_retries,
+            waiting=2.0,
+        )
+    else:
+        response_text = completion_text(
+            gpt3_input,
+            model=model,
+            temperature=0.0,
+            max_tokens=256,
+            num_retries=num_retries,
+            waiting=2.0,
+            logit_bias={"50256": -100},
+        )
 
     # Some completion models emit leading newlines; avoid collapsing to an empty parse.
     if not (response_text or "").strip():
         fallback_input = (
             gpt3_input
             + "\n\nRespond with exactly one line in this format: "
-            + "Label: agrees|disagrees|ambiguous|unverifiable"
+            + "agrees|disagrees|ambiguous|unverifiable"
         )
-        response_text = completion_text(
-            fallback_input,
-            model=model,
-            temperature=0.0,
-            max_tokens=64,
-            num_retries=max(1, num_retries),
-            waiting=2.0,
-            logit_bias={"50256": -100},
-        )
+        if use_compact_prompt:
+            response_text = chat_text(
+                [{"role": "user", "content": fallback_input}],
+                model=model,
+                system_role="Output one label only: agrees, disagrees, ambiguous, or unverifiable.",
+                temperature=0.0,
+                num_retries=max(1, num_retries),
+                waiting=2.0,
+            )
+        else:
+            response_text = completion_text(
+                fallback_input,
+                model=model,
+                temperature=0.0,
+                max_tokens=64,
+                num_retries=max(1, num_retries),
+                waiting=2.0,
+                logit_bias={"50256": -100},
+            )
 
     is_open, reason, decision = parse_api_response(response_text)
     gate = {

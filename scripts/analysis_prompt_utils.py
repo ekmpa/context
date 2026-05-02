@@ -19,7 +19,7 @@ def labels_for_condition(condition: str) -> List[str]:
     if condition == "unverif":
         return ["has_justifiable_answer", "no_justifiable_answer", "unclear"]
     if condition == "ambig":
-        return ["multiple_justifiable_answers", "single_or_none", "unclear"]
+        return ["multiple_justifiable_answers", "single_clear", "unclear_or_none"]
     return []
 
 
@@ -89,7 +89,9 @@ def judge_prompts(condition: str, claim: str) -> Tuple[str, str]:
             "Claim:\n"
             f"{clean_claim}\n\n"
             "Question:\n"
-            "Could this claim have multiple justifiable answers?\n\n"
+            "Under a normal, non-contrived reading, does this claim have more than one substantively different, "
+            "defensible answer? Use 'multiple_justifiable_answers' only when multiple answers could reasonably be correct, "
+            "not merely because wording is broad or some details are omitted. If one answer is clearly best, use 'single_clear'.\n\n"
             "Return only one label:\n"
             "- multiple_justifiable_answers\n"
             "- single_clear\n"
