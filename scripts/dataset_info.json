@@ -1,0 +1,15 @@
+{
+  "_comment": "Per-dataset metadata used by the analysis pipeline. Keys are the dataset names as passed to --dataset.",
+  "liar": {
+    "dataset_year": 2017,
+    "date_col": null,
+    "date_col_format": null,
+    "notes": "LIAR (Wang 2017). Claims were collected 2007-2016. Date column present but all values are 'na'. Use dataset_year as fallback."
+  },
+  "fakecovid": {
+    "dataset_year": 2020,
+    "date_col": "date",
+    "date_col_format": "%Y/%m/%d",
+    "notes": "FakeCovid (Shahi & Nandini 2020). Claims collected Jan-May 2020. Per-row date column available."
+  }
+}

@@ -198,16 +198,15 @@ def _format_structural_context(domain: str, payload: Any) -> str:
     if isinstance(payload, list):
         neighbors = [x for x in payload if isinstance(x, str)][:max_neighbors]
         if not neighbors:
-            return f"Domain graph hints for {domain}: no recent neighbors found in hook output."
+            return f"Source context for {domain}: no co-linking neighbors found in graph index."
         return (
-            f"Domain graph hints for {domain}. "
-            f"Latest-graph {os.getenv('RARR_STRUCTURAL_HOPS', '2')}-hop neighbors: "
-            + ", ".join(neighbors)
-            + "."
+            f"Source context for {domain}: "
+            f"frequently co-links with {', '.join(neighbors)}. "
+            f"Consider what this peer group implies about the outlet's credibility and editorial stance."
         )
 
     if not isinstance(payload, dict):
-        return f"Domain graph hints for {domain}: hook output format was not recognized."
+        return f"Source context for {domain}: graph data format not recognized."
 
     month_counts = [
         f"{month}:{len(payload.get(month, []))}"
@@ -224,16 +223,15 @@ def _format_structural_context(domain: str, payload: Any) -> str:
             break
 
     if not month_counts and not most_recent_neighbors:
-        return f"Domain graph hints for {domain}: no neighbor data found in hook index."
+        return f"Source context for {domain}: no neighbor data found in graph index."
 
-    summary = f"Domain graph hints for {domain}. Monthly neighbor counts: {'; '.join(month_counts)}."
-    if most_recent_month and most_recent_neighbors:
-        summary += (
-            f" Example neighbors from {most_recent_month}: "
-            + ", ".join(most_recent_neighbors)
-            + "."
-        )
-    return summary
+    neighbor_str = ", ".join(most_recent_neighbors) if most_recent_neighbors else "none recorded"
+    activity = f"active across {len(month_counts)} month(s)" if month_counts else "limited activity"
+    return (
+        f"Source context for {domain} ({activity}): "
+        f"recent co-linking peers include {neighbor_str}. "
+        f"Consider what this peer group implies about the outlet's credibility and editorial stance."
+    )
 
 
 def _lookup_structural_context(domain: str, timeout: float = 6.0) -> str:

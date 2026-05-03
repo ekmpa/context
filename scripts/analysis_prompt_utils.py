@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 
-SUPPORTED_CONDITIONS = {"none", "conflict", "stale", "opinion", "unverif", "ambig"}
+SUPPORTED_CONDITIONS = {"none", "conflict", "conflict_compare", "stale", "opinion", "unverif", "ambig"}
 
 
 def condition_requires_web_search(condition: str) -> bool:
@@ -23,7 +23,7 @@ def labels_for_condition(condition: str) -> List[str]:
     return []
 
 
-def judge_prompts(condition: str, claim: str) -> Tuple[str, str]:
+def judge_prompts(condition: str, claim: str, claim_date: str | None = None) -> Tuple[str, str]:
     condition = condition.strip().lower()
     clean_claim = claim.strip()
 
@@ -33,12 +33,16 @@ def judge_prompts(condition: str, claim: str) -> Tuple[str, str]:
             "Reason conservatively. "
             "Output exactly one label from {changed, unchanged, unclear}."
         )
+        if claim_date:
+            time_ref = f"since this claim was made ({claim_date})"
+        else:
+            time_ref = "within the past 12 months"
         user = (
             "Claim:\n"
             f"{clean_claim}\n\n"
             "Question:\n"
-            "This claim may be outdated. Based on recent evidence you can find, do you believe the verifiability "
-            "of this claim (whether it has an established answer) has changed within the past 12 months?\n\n"
+            f"This claim may be outdated. Based on recent evidence you can find, do you believe the verifiability "
+            f"of this claim (whether it has an established answer) has changed {time_ref}?\n\n"
             "Return only one label:\n"
             "- changed\n"
             "- unchanged\n"

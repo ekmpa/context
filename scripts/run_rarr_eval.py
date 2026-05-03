@@ -770,6 +770,14 @@ def _build_meta_eval(
     entries: list[dict],
     search_stats: dict | None = None,
 ) -> dict:
+    seed_value = None
+    seed_text = os.getenv("RARR_SEED", "").strip()
+    if seed_text:
+        try:
+            seed_value = int(seed_text)
+        except ValueError:
+            seed_value = None
+
     prediction_options = ["true", "false", "unverifiable", "ambiguous"]
     gold_options = ["true", "false", "unverified"]
 
@@ -804,11 +812,22 @@ def _build_meta_eval(
             "covered_only_eval": covered_metrics,
         }
 
+    structural_hops: int | None = None
+    if condition == "structural":
+        hops_text = os.getenv("RARR_STRUCTURAL_HOPS", "").strip()
+        if hops_text.isdigit():
+            structural_hops = int(hops_text)
+        else:
+            structural_hops = 2  # default used by the hook
+
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "run_id": run_id,
         "dataset": dataset_name,
         "split": hf_split,
+        "condition": condition,
+        "seed": seed_value,
+        "structural_hops": structural_hops,
         "model_id": model_id,
         "model": model_info,
         "rows_total": total_metrics["rows_total"],
@@ -873,6 +892,72 @@ def _write_compact_eval_reports(
         json.dump(meta_payload, handle, indent=2, sort_keys=True)
 
     return model_path, meta_path, meta_payload
+
+
+PERFORMANCE_LOG = ROOT_DIR / "eval_results" / "performance_log.json"
+
+
+def _upsert_performance_log(meta: dict) -> None:
+    """Append (or replace) a run entry in the shared performance log.
+
+    Keyed by ``run_id``; if the same run_id already exists (e.g. the run was
+    re-run to regenerate reports) the entry is replaced in-place so the log
+    stays deduplicated.
+    """
+    existing: list[dict] = []
+    if PERFORMANCE_LOG.exists():
+        try:
+            payload = json.loads(PERFORMANCE_LOG.read_text(encoding="utf-8"))
+            existing = payload.get("runs", [])
+        except Exception:
+            existing = []
+
+    model_info = meta.get("model") or {}
+
+    def _per_cat(m: dict) -> dict[str, float]:
+        raw = m.get("per_category_prediction_counts") or {}
+        out: dict[str, float] = {}
+        for gold, preds in raw.items():
+            total = sum(preds.values())
+            if total == 0:
+                continue
+            out[gold] = round(preds.get(gold, 0) / total, 4)
+        return out
+
+    new_entry = {
+        "run_id": meta.get("run_id"),
+        "generated_at": meta.get("generated_at"),
+        "dataset": meta.get("dataset"),
+        "split": meta.get("split"),
+        "condition": meta.get("condition", "raw"),
+        "seed": meta.get("seed"),
+        "structural_hops": meta.get("structural_hops"),
+        "rarr_model": model_info.get("rarr_model", "unknown"),
+        "factcheck_gpt_model": model_info.get("factcheck_gpt_model", "unknown"),
+        "model_id": meta.get("model_id"),
+        "rows_total": meta.get("rows_total"),
+        "rows_scored": meta.get("rows_scored"),
+        "accuracy": meta.get("accuracy"),
+        "per_category_accuracy": _per_cat(meta),
+    }
+
+    run_id = new_entry["run_id"]
+    replaced = False
+    for i, row in enumerate(existing):
+        if row.get("run_id") == run_id:
+            existing[i] = new_entry
+            replaced = True
+            break
+    if not replaced:
+        existing.append(new_entry)
+
+    existing.sort(key=lambda r: r.get("generated_at") or "")
+    PERFORMANCE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    PERFORMANCE_LOG.write_text(
+        json.dumps({"runs": existing}, indent=2), encoding="utf-8"
+    )
+    action = "Updated" if replaced else "Appended"
+    print(f"Performance log {action}: {PERFORMANCE_LOG}  ({len(existing)} total runs)")
 
 
 def _default_run_id(hf_dataset: str) -> str:
@@ -1145,6 +1230,8 @@ def run(args: argparse.Namespace) -> None:
         entries=entries,
         search_stats=search_utils.get_search_stats(),
     )
+
+    _upsert_performance_log(meta_payload)
 
     print(f"Run finished: {run_id}")
     print(f"Rows processed: {len(records)} | Output folder: {output_dir}")
