@@ -13,7 +13,7 @@ import pandas as pd
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 LOCAL_CORE_DIR = SCRIPTS_DIR / "context_core"
-DEFAULT_STRUCTURAL_SHARDS_DIR = "/network/scratch/k/kondrupe/credibench-neighbors_serving_shards"
+DEFAULT_STRUCTURAL_SHARDS_DIR = "data/"
 DATA_STATS_DIR = ROOT_DIR / "data_stats"
 MODEL_BACKEND_PREFIX_MAP: dict[str, tuple[str, ...]] = {
     "hf-local": ("qwen", "llama"),
