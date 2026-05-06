@@ -1,13 +1,12 @@
 # context
 
 Automated fact-checking pipeline with different conditions:
-- Raw fact-checking, following the RARR pipeline from [OpenFactCheck]
+- Raw fact-checking, following the RARR pipeline from [OpenFactCheck](https://openfactcheck.com)
 - With third-party reliability signals, from [DQR]
-- With 1- or 2-hop structural information, from [CrediBench] 
+- With 1- or 2-hop structural information, from [CrediBench](https://huggingface.co/datasets/credi-net/CrediBench) 
 
 On: 
-- [CDL-Misinfo-Datasets]
-- [...]
+- [CDL-Misinfo-Datasets](https://dl.acm.org/doi/abs/10.1145/3711896.3737437)
 
 ## Set-up
 
