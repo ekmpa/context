@@ -1,0 +1,74 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 1 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=isot-fake-news
+Default dataset path: test=./data/isot-fake-news/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/isot-fake-news/test/data.jsonl --condition structural
+Running: python ./scripts/run_rarr_eval.py ./data/isot-fake-news/test/data.jsonl --condition structural --max-rows  --rarr-model gpt-5-mini --structural --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards
+Structural mode is on (shards: /network/scratch/k/kondrupe/credibench-neighbors_serving_shards)
+Run settings: condition=structural, backend=openai, max_rows=all, seed=1, num_rounds_qgen=3, max_evidences_per_question=5
+Structural settings: hops=2, hook_mode=temporal, months_back=3, hook_timeout_s=40
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (168 total runs)
+Run finished: rarr-dataset-20260504-231320-414863
+Rows processed: 400 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-414863
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-414863/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-414863/meta_eval.json
+Run summary:
+  rows scored: 359
+  avg evidence/row: 4.06
+  avg evidence/benchmark query: 4.06
+  avg evidence/row (with detail): 4.06
+  total evidence retrieved: 1459
+  search timeouts: 0
+  serper->ddg fallbacks: 0
+  provider failures: 0
+  queries with no results: 2
+  structural hops: 2 | seed: 1
+  structural context coverage (queries): 359/400 (89.8%)
+  structural context coverage (evidence): 986/1508 (65.4%)
+  structural covered-only eval (this run's primary accuracy basis): rows=359 (covered=359, uncovered=41), accuracy=0.5153203342618384
+  accuracy: 0.5153203342618384
+  label audit: rows=400, raw_unique=3, fallback=0, normalized(true=200, false=200, unverified=0)
+  true: t=141, f=24, u=11, a=20
+  false: t=44, f=44, u=50, a=25
+  unverified: t=0, f=0, u=0, a=0
+  sanity first-sample:
+    claim: hariri indicates possibility of revoking his resignation
+    first query: hariri indicates possibility of revoking his resignation
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: hariri indicates possibility of revoking his resignation
+Search query: hariri indicates possibility of revoking his resignation
+Evidence snippet: Lebanese PM Hariri indicates possibility of revoking his resignation Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his... Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his political party, Hariri said he planned to return to Lebanon to confirm his resignation in accordance with the constitution.
+Source/domain context: Source context for timesofmalta.com: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=aero.acumen(1), aero.aerot...
+    retrieved answer snippet: Lebanese PM Hariri indicates possibility of revoking his resignation Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his......
+    structural/score context: Source context for timesofmalta.com: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=aero.acumen(1), aero.aerotime(1), ai.humainism(1), ai.myhub(1), ai.napier(1), ai.networth(1), ai.perplexity(...
+    verifier answer: agrees (decision=agrees)
+    gold truth: true

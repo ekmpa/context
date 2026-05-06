@@ -6,6 +6,7 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
+from statistics import mean, pstdev
 from typing import Any, Callable
 
 import pandas as pd
@@ -48,13 +49,14 @@ _load_env()
 
 
 def parse_args() -> argparse.Namespace:
+    condition_choices = sorted(set(SUPPORTED_CONDITIONS) | {"compare"})
     parser = argparse.ArgumentParser(description="Analyze claim datasets with condition-specific counting and LLM-as-judge modes.")
     parser.add_argument("--dataset", default="", help="Dataset name under data/<dataset> or a direct file path (.jsonl/.csv)")
     parser.add_argument(
         "--condition",
         required=True,
-        choices=sorted(SUPPORTED_CONDITIONS),
-        help="Analysis condition: none | conflict | stale | opinion | unverif | ambig",
+        choices=condition_choices,
+        help="Analysis condition: none | conflict | conflict_compare | compare | stale | opinion | unverif | ambig",
     )
     parser.add_argument("--judge", default="gpt-4.1-mini", help="Judge model id")
     parser.add_argument("--output-dir", required=True, help="Directory to save analysis outputs")
@@ -85,6 +87,16 @@ def parse_args() -> argparse.Namespace:
         "--run-log",
         default="",
         help="Path to a RARR model log (factcheck-*.json). Used by condition=conflict.",
+    )
+    parser.add_argument(
+        "--compare-conditions",
+        default="raw,structural,third-party,source_attr",
+        help="Comma-separated RARR conditions to compare for condition=conflict_compare",
+    )
+    parser.add_argument(
+        "--anchor-condition",
+        default="raw",
+        help="Condition used to define the conflicting-evidence subset for condition=conflict_compare",
     )
     parser.add_argument("--third-party-ratings-file", default="", help="Accepted for IO compatibility; not used yet")
     return parser.parse_args()
@@ -284,6 +296,7 @@ def _resolve_conflict_run_log(
     dataset: str,
     rarr_model: str,
     rarr_condition: str,
+    required_structural_hops: int | None = None,
     seed: int | None,
 ) -> Path:
     if explicit_path.strip():
@@ -292,37 +305,91 @@ def _resolve_conflict_run_log(
             raise FileNotFoundError(f"Run log not found: {path}")
         return path
 
-    dataset_filter = dataset.strip().lower()
+    def _normalize_dataset_name(value: str) -> str:
+        text = (value or "").strip().lower()
+        if not text:
+            return ""
+        # Treat benjamin-political-news and benjamin_political_news as equivalent.
+        return text.replace("-", "_").replace(" ", "_")
+
+    def _normalize_condition_name(value: str) -> str:
+        text = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if text == "third_party":
+            return "third-party"
+        if text == "source_attr":
+            return "source_attr"
+        if text == "sourceattr":
+            return "source_attr"
+        return text
+
+    def _as_int(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    dataset_filter = _normalize_dataset_name(dataset)
     model_filter = rarr_model.strip().lower()
     # Conflict analysis is intended for fact-checking evidence behavior from the
     # standard raw pipeline unless explicitly overridden.
-    condition_filter = (rarr_condition.strip().lower() or "raw")
+    condition_filter = _normalize_condition_name(rarr_condition or "raw")
 
-    candidates: list[tuple[int, int, float, Path]] = []
+    # Prefer explicitly matching metadata, then recency, then run size.
+    strict_candidates: list[tuple[int, int, int, float, int, Path]] = []
+    fallback_candidates: list[tuple[int, int, int, float, int, Path]] = []
     for meta_path in (ROOT_DIR / "eval_results" / "custom").glob("rarr-*/meta_eval.json"):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
             continue
 
-        meta_dataset = str(meta.get("dataset", "") or "").strip().lower()
+        meta_dataset = _normalize_dataset_name(str(meta.get("dataset", "") or ""))
         meta_model = str(((meta.get("model") or {}).get("rarr_model", "") or "")).strip().lower()
-        meta_condition = str(meta.get("condition", "") or "").strip().lower()
+        meta_condition = _normalize_condition_name(str(meta.get("condition", "") or ""))
         meta_seed = meta.get("seed", None)
         rows_total = int(meta.get("rows_total", 0) or 0)
+        structural_hops = _as_int(meta.get("structural_hops"))
 
-        if dataset_filter and meta_dataset and meta_dataset != dataset_filter:
-            continue
-        model_match = 1
+        if required_structural_hops is not None:
+            if meta_condition != "structural":
+                continue
+            if structural_hops != required_structural_hops:
+                continue
+
+        dataset_quality = 1
+        if dataset_filter:
+            if meta_dataset:
+                if meta_dataset != dataset_filter:
+                    continue
+                dataset_quality = 2
+            else:
+                dataset_quality = 0
+
+        model_quality = 1
         if model_filter:
-            model_match = 1 if (meta_model and meta_model == model_filter) else 0
+            if meta_model:
+                if meta_model != model_filter:
+                    continue
+                model_quality = 2
+            else:
+                model_quality = 0
+
         if condition_filter and meta_condition and meta_condition != condition_filter:
             continue
-        if condition_filter and not meta_condition:
-            # Older runs may not store condition in meta_eval. Keep them as a
-            # fallback candidate; ranking below prefers explicit condition
-            # matches and larger runs.
-            pass
+
+        condition_quality = 1 if not condition_filter else (2 if meta_condition else 0)
+
+        # For structural condition, prefer the temporal 1-hop / 2-hop runs.
+        structural_hops_quality = 1
+        if condition_filter == "structural":
+            if structural_hops in {1, 2}:
+                structural_hops_quality = 3
+            elif structural_hops is not None:
+                structural_hops_quality = 2
+            else:
+                structural_hops_quality = 0
+
         if seed is not None:
             if isinstance(meta_seed, int):
                 if meta_seed != seed:
@@ -335,18 +402,113 @@ def _resolve_conflict_run_log(
         model_logs = sorted(run_dir.glob("factcheck-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not model_logs:
             continue
-        # Rank by rows_total first (prefer fuller runs like 600 over 10/50
-        # smoke tests), then prefer model matches, then recency.
-        candidates.append((rows_total, model_match, meta_path.stat().st_mtime, model_logs[0].resolve()))
 
-    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    resolved = [path for _, _, _, path in candidates]
-    if not candidates:
+        newest_log = model_logs[0]
+        unknown_name_penalty = 0 if "unknown" not in newest_log.name.lower() else -1
+        candidate = (
+            dataset_quality,
+            condition_quality,
+            structural_hops_quality,
+            model_quality,
+            meta_path.stat().st_mtime,
+            rows_total,
+            newest_log.resolve(),
+        )
+
+        if dataset_quality == 2 and condition_quality == 2 and (model_quality > 0):
+            strict_candidates.append(candidate)
+        else:
+            # Keep weaker metadata matches as a fallback, while still preferring
+            # non-unknown file names and more complete runs within the tier.
+            fallback_candidates.append(
+                (
+                    dataset_quality,
+                    condition_quality,
+                    structural_hops_quality,
+                    model_quality + unknown_name_penalty,
+                    meta_path.stat().st_mtime,
+                    rows_total,
+                    newest_log.resolve(),
+                )
+            )
+
+    strict_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
+    fallback_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
+    resolved = [path for _, _, _, _, _, _, path in strict_candidates]
+    resolved.extend(path for _, _, _, _, _, _, path in fallback_candidates)
+    if not resolved:
         raise FileNotFoundError(
             "No matching run log found under eval_results/custom for the requested filters. "
             "Provide --run-log <path/to/factcheck-*.json> or relax dataset/model/condition/seed filters."
         )
     return resolved[0]
+
+
+def _list_available_run_seeds(
+    *,
+    dataset: str,
+    rarr_model: str,
+    rarr_condition: str,
+    required_structural_hops: int | None = None,
+) -> list[int]:
+    def _normalize_dataset_name(value: str) -> str:
+        text = (value or "").strip().lower()
+        if not text:
+            return ""
+        return text.replace("-", "_").replace(" ", "_")
+
+    def _normalize_condition_name(value: str) -> str:
+        text = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if text == "third_party":
+            return "third-party"
+        if text in {"source_attr", "sourceattr"}:
+            return "source_attr"
+        return text
+
+    def _as_int(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    dataset_filter = _normalize_dataset_name(dataset)
+    model_filter = (rarr_model or "").strip().lower()
+    condition_filter = _normalize_condition_name(rarr_condition)
+
+    seeds: set[int] = set()
+    for meta_path in (ROOT_DIR / "eval_results" / "custom").glob("rarr-*/meta_eval.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        meta_dataset = _normalize_dataset_name(str(meta.get("dataset", "") or ""))
+        meta_condition = _normalize_condition_name(str(meta.get("condition", "") or ""))
+        meta_model = str(((meta.get("model") or {}).get("rarr_model", "") or "")).strip().lower()
+        meta_seed = _as_int(meta.get("seed"))
+        structural_hops = _as_int(meta.get("structural_hops"))
+
+        if dataset_filter and meta_dataset and meta_dataset != dataset_filter:
+            continue
+        if condition_filter and meta_condition and meta_condition != condition_filter:
+            continue
+        if required_structural_hops is not None:
+            if meta_condition != "structural" or structural_hops != required_structural_hops:
+                continue
+        if model_filter and meta_model and meta_model != model_filter:
+            continue
+        if meta_seed is not None:
+            seeds.add(meta_seed)
+
+    return sorted(seeds)
+
+
+def _mean_std(values: list[float | int]) -> tuple[float | None, float | None]:
+    numeric = [float(v) for v in values]
+    if not numeric:
+        return None, None
+    return mean(numeric), (pstdev(numeric) if len(numeric) > 1 else 0.0)
 
 
 def _condition_conflict_from_run_log(run_log_path: Path, max_rows: int | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -437,6 +599,570 @@ def _condition_conflict_from_run_log(run_log_path: Path, max_rows: int | None) -
     summary["conflict_rate_of_total"] = (conflict_count / total) if total else 0.0
     summary["conflict_rate_of_directional"] = (conflict_count / directional_count) if directional_count else 0.0
     summary["pattern_counts"] = dict(sorted(pattern_counts.items(), key=lambda kv: kv[0]))
+    return summary, rows
+
+
+def _extract_entry_labels(entry: dict[str, Any]) -> list[str]:
+    details = entry.get("detail", []) if isinstance(entry, dict) else []
+    if not isinstance(details, list):
+        return []
+    labels: list[str] = []
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        detail_labels = detail.get("labels", [])
+        if isinstance(detail_labels, list):
+            labels.extend(str(label).strip().lower() for label in detail_labels if str(label).strip())
+    return labels
+
+
+def _entry_has_conflicting_signal(entry: dict[str, Any]) -> bool:
+    labels = _extract_entry_labels(entry)
+    return ("agrees" in labels) and ("disagrees" in labels)
+
+
+def _entry_key(entry: dict[str, Any]) -> tuple[str, str | int] | None:
+    raw_index = entry.get("index")
+    if isinstance(raw_index, int):
+        return ("index", raw_index)
+    if isinstance(raw_index, str) and raw_index.strip().isdigit():
+        return ("index", int(raw_index.strip()))
+    claim = str(entry.get("prompt", "") or "").strip().lower()
+    if claim:
+        return ("claim", claim)
+    return None
+
+
+def _load_run_entries(run_log_path: Path, max_rows: int | None) -> list[dict[str, Any]]:
+    payload = json.loads(run_log_path.read_text(encoding="utf-8"))
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError(f"Unexpected run log format in {run_log_path}: 'entries' must be a list")
+    if max_rows is not None:
+        entries = entries[:max_rows]
+    cleaned: list[dict[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            cleaned.append(entry)
+    return cleaned
+
+
+def _parse_compare_conditions(text: str) -> list[str]:
+    def _normalize_condition_name(value: str) -> str:
+        normalized = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if normalized == "third_party":
+            return "third-party"
+        if normalized in {"source_attr", "sourceattr"}:
+            return "source_attr"
+        return normalized
+
+    out: list[str] = []
+    for chunk in text.split(","):
+        cond = _normalize_condition_name(chunk)
+        if cond and cond not in out:
+            out.append(cond)
+    return out
+
+
+def _expand_compare_condition_specs(compare_conditions: list[str]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+
+    def _push(label: str, run_condition: str, structural_hops: int | None = None) -> None:
+        if label in seen_labels:
+            return
+        seen_labels.add(label)
+        specs.append(
+            {
+                "label": label,
+                "run_condition": run_condition,
+                "structural_hops": structural_hops,
+            }
+        )
+
+    for cond in compare_conditions:
+        if cond == "structural":
+            _push("struct-1t", "structural", structural_hops=1)
+            _push("struct-2t", "structural", structural_hops=2)
+            continue
+        if cond in {"struct-1t", "structural-1t", "structural_1t", "structural1t"}:
+            _push("struct-1t", "structural", structural_hops=1)
+            continue
+        if cond in {"struct-2t", "structural-2t", "structural_2t", "structural2t"}:
+            _push("struct-2t", "structural", structural_hops=2)
+            continue
+        _push(cond, cond)
+
+    return specs
+
+
+def _condition_conflict_compare(
+    *,
+    dataset: str,
+    rarr_model: str,
+    seed: int | None,
+    compare_conditions: list[str],
+    anchor_condition: str,
+    max_rows: int | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not compare_conditions:
+        raise ValueError("No compare conditions provided for conflict_compare")
+
+    condition_specs = _expand_compare_condition_specs(compare_conditions)
+    display_conditions = [spec["label"] for spec in condition_specs]
+
+    selected: dict[str, dict[str, Any]] = {}
+    missing_conditions: list[str] = []
+    for spec in condition_specs:
+        cond = str(spec["label"])
+        seed_values = [seed] if seed is not None else _list_available_run_seeds(
+            dataset=dataset,
+            rarr_model=rarr_model,
+            rarr_condition=str(spec["run_condition"]),
+            required_structural_hops=spec.get("structural_hops"),
+        )
+        if not seed_values:
+            seed_values = [None]
+
+        runs_by_seed: dict[str, dict[str, Any]] = {}
+        representative_payload: dict[str, Any] | None = None
+        for seed_value in seed_values:
+            try:
+                run_log_path = _resolve_conflict_run_log(
+                    "",
+                    dataset=dataset,
+                    rarr_model=rarr_model,
+                    rarr_condition=str(spec["run_condition"]),
+                    required_structural_hops=spec.get("structural_hops"),
+                    seed=seed_value,
+                )
+            except FileNotFoundError:
+                continue
+
+            entries = _load_run_entries(run_log_path, max_rows)
+            key_map: dict[tuple[str, str | int], dict[str, Any]] = {}
+            for entry in entries:
+                key = _entry_key(entry)
+                if key is not None:
+                    key_map[key] = entry
+
+            meta_path = run_log_path.parent / "meta_eval.json"
+            meta: dict[str, Any] = {}
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+
+            seed_key = str(seed_value) if seed_value is not None else "unseeded"
+            payload = {
+                "run_log_path": run_log_path,
+                "entries": entries,
+                "by_key": key_map,
+                "meta": meta,
+                "seed": seed_value,
+            }
+            runs_by_seed[seed_key] = payload
+            if representative_payload is None:
+                representative_payload = payload
+
+        if not runs_by_seed:
+            missing_conditions.append(cond)
+            continue
+
+        selected[cond] = {
+            "runs_by_seed": runs_by_seed,
+            "representative": representative_payload,
+        }
+
+    if anchor_condition not in selected:
+        if selected:
+            anchor_condition = next(iter(selected.keys()))
+        else:
+            raise FileNotFoundError(
+                "No matching runs found for conflict_compare under eval_results/custom. "
+                "Run eval first, or relax --dataset/--rarr-model/--seed filters."
+            )
+
+    anchor_rep = selected[anchor_condition]["representative"]
+    anchor_entries = anchor_rep["entries"]
+    anchor_by_key = anchor_rep["by_key"]
+
+    conflict_keys: list[tuple[str, str | int]] = []
+    for entry in anchor_entries:
+        key = _entry_key(entry)
+        if key is None:
+            continue
+        if _entry_has_conflicting_signal(entry):
+            conflict_keys.append(key)
+
+    # Keep deterministic ordering while removing duplicates.
+    dedup_conflict_keys = list(dict.fromkeys(conflict_keys))
+
+    per_condition: dict[str, Any] = {}
+    for cond in display_conditions:
+        payload = selected.get(cond)
+        if not payload:
+            continue
+        runs_by_seed = payload["runs_by_seed"]
+        anchor_runs_by_seed = selected[anchor_condition]["runs_by_seed"]
+        common_seed_keys = sorted(set(anchor_runs_by_seed) & set(runs_by_seed), key=str)
+        per_seed_metrics: list[dict[str, Any]] = []
+        for seed_key in common_seed_keys:
+            seed_anchor = anchor_runs_by_seed[seed_key]
+            seed_target = runs_by_seed[seed_key]
+            seed_conflict_keys: list[tuple[str, str | int]] = []
+            for entry in seed_anchor["entries"]:
+                key = _entry_key(entry)
+                if key is not None and _entry_has_conflicting_signal(entry):
+                    seed_conflict_keys.append(key)
+            seed_conflict_keys = list(dict.fromkeys(seed_conflict_keys))
+            by_key = seed_target["by_key"]
+            evaluated_keys = [k for k in seed_conflict_keys if k in by_key]
+            total = len(evaluated_keys)
+            correct = sum(1 for k in evaluated_keys if bool(by_key[k].get("result", False)))
+            accuracy = (correct / total) if total else None
+            overall_accuracy = (seed_target.get("meta") or {}).get("accuracy")
+            per_seed_metrics.append(
+                {
+                    "seed": seed_target.get("seed"),
+                    "seed_key": seed_key,
+                    "rows_on_conflict_subset": total,
+                    "correct_on_conflict_subset": correct,
+                    "accuracy_on_conflict_subset": accuracy,
+                    "overall_accuracy": overall_accuracy,
+                }
+            )
+
+        rows_mean, rows_std = _mean_std([m["rows_on_conflict_subset"] for m in per_seed_metrics])
+        correct_mean, correct_std = _mean_std([m["correct_on_conflict_subset"] for m in per_seed_metrics])
+        acc_mean, acc_std = _mean_std([
+            m["accuracy_on_conflict_subset"] for m in per_seed_metrics if isinstance(m["accuracy_on_conflict_subset"], (int, float))
+        ])
+        overall_mean, overall_std = _mean_std([
+            m["overall_accuracy"] for m in per_seed_metrics if isinstance(m["overall_accuracy"], (int, float))
+        ])
+        rep = payload["representative"]
+        per_condition[cond] = {
+            "run_log": str(rep["run_log_path"]),
+            "rows_total": len(rep["entries"]),
+            "seed_count": len(per_seed_metrics),
+            "seed_keys": common_seed_keys,
+            "per_seed": per_seed_metrics,
+            "rows_on_conflict_subset": rows_mean,
+            "rows_on_conflict_subset_std": rows_std,
+            "correct_on_conflict_subset": correct_mean,
+            "correct_on_conflict_subset_std": correct_std,
+            "accuracy_on_conflict_subset": acc_mean,
+            "accuracy_on_conflict_subset_std": acc_std,
+            "overall_accuracy": overall_mean,
+            "overall_accuracy_std": overall_std,
+            "run_id": (rep.get("meta") or {}).get("run_id"),
+        }
+
+    anchor_stats = per_condition.get(anchor_condition)
+    anchor_subset_acc = anchor_stats.get("accuracy_on_conflict_subset") if isinstance(anchor_stats, dict) else None
+    anchor_overall_acc = anchor_stats.get("overall_accuracy") if isinstance(anchor_stats, dict) else None
+
+    for cond in display_conditions:
+        stats = per_condition.get(cond)
+        if not isinstance(stats, dict):
+            continue
+        subset_acc = stats.get("accuracy_on_conflict_subset")
+        overall_acc = stats.get("overall_accuracy")
+        stats["gain_vs_anchor_subset_pct"] = (
+            ((subset_acc - anchor_subset_acc) / anchor_subset_acc) * 100.0
+            if (
+                isinstance(subset_acc, (int, float))
+                and isinstance(anchor_subset_acc, (int, float))
+                and anchor_subset_acc != 0
+            )
+            else None
+        )
+        stats["gain_vs_anchor_overall_pct"] = (
+            ((overall_acc - anchor_overall_acc) / anchor_overall_acc) * 100.0
+            if (
+                isinstance(overall_acc, (int, float))
+                and isinstance(anchor_overall_acc, (int, float))
+                and anchor_overall_acc != 0
+            )
+            else None
+        )
+
+    rows: list[dict[str, Any]] = []
+    for key in dedup_conflict_keys:
+        anchor_entry = anchor_by_key.get(key, {})
+        row: dict[str, Any] = {
+            "key_type": key[0],
+            "key": key[1],
+            "claim": str(anchor_entry.get("prompt", "") or "").strip(),
+            "gold_label": str(anchor_entry.get("gold_label", "") or "").strip().lower(),
+            "anchor_condition": anchor_condition,
+            "anchor_has_conflicting_signal": _entry_has_conflicting_signal(anchor_entry),
+            "per_condition": {},
+        }
+        for cond in display_conditions:
+            payload = selected.get(cond)
+            if not payload:
+                row["per_condition"][cond] = None
+                continue
+            representative = payload.get("representative") or {}
+            entry = representative.get("by_key", {}).get(key)
+            if entry is None:
+                row["per_condition"][cond] = None
+                continue
+            row["per_condition"][cond] = {
+                "pred_label": str(entry.get("pred_label", "") or "").strip().lower(),
+                "pred_bucket": str(entry.get("pred_bucket", "") or "").strip().lower(),
+                "correct": bool(entry.get("result", False)),
+                "has_conflicting_signal": _entry_has_conflicting_signal(entry),
+            }
+        rows.append(row)
+
+    summary = summary_template(dataset or "custom", "conflict_compare", len(dedup_conflict_keys))
+    summary["anchor_condition"] = anchor_condition
+    summary["anchor_run_log"] = str(anchor_rep["run_log_path"])
+    summary["conflict_rows_anchor"] = len(dedup_conflict_keys)
+    summary["compare_conditions"] = display_conditions
+    summary["missing_conditions"] = missing_conditions
+    summary["per_condition"] = per_condition
+    return summary, rows
+
+
+def _entry_is_unverifiable_by_gold_label(entry: dict[str, Any]) -> bool:
+    gold = str(entry.get("gold_label", "") or "").strip().lower()
+    return gold in {"unverified", "unverifiable"}
+
+
+def _condition_unverifiable_compare(
+    *,
+    dataset: str,
+    rarr_model: str,
+    seed: int | None,
+    compare_conditions: list[str],
+    anchor_condition: str,
+    max_rows: int | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not compare_conditions:
+        raise ValueError("No compare conditions provided for unverifiable_compare")
+
+    condition_specs = _expand_compare_condition_specs(compare_conditions)
+    display_conditions = [spec["label"] for spec in condition_specs]
+
+    selected: dict[str, dict[str, Any]] = {}
+    missing_conditions: list[str] = []
+    for spec in condition_specs:
+        cond = str(spec["label"])
+        seed_values = [seed] if seed is not None else _list_available_run_seeds(
+            dataset=dataset,
+            rarr_model=rarr_model,
+            rarr_condition=str(spec["run_condition"]),
+            required_structural_hops=spec.get("structural_hops"),
+        )
+        if not seed_values:
+            seed_values = [None]
+
+        runs_by_seed: dict[str, dict[str, Any]] = {}
+        representative_payload: dict[str, Any] | None = None
+        for seed_value in seed_values:
+            try:
+                run_log_path = _resolve_conflict_run_log(
+                    "",
+                    dataset=dataset,
+                    rarr_model=rarr_model,
+                    rarr_condition=str(spec["run_condition"]),
+                    required_structural_hops=spec.get("structural_hops"),
+                    seed=seed_value,
+                )
+            except FileNotFoundError:
+                continue
+
+            entries = _load_run_entries(run_log_path, max_rows)
+            key_map: dict[tuple[str, str | int], dict[str, Any]] = {}
+            for entry in entries:
+                key = _entry_key(entry)
+                if key is not None:
+                    key_map[key] = entry
+
+            meta_path = run_log_path.parent / "meta_eval.json"
+            meta: dict[str, Any] = {}
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+
+            seed_key = str(seed_value) if seed_value is not None else "unseeded"
+            payload = {
+                "run_log_path": run_log_path,
+                "entries": entries,
+                "by_key": key_map,
+                "meta": meta,
+                "seed": seed_value,
+            }
+            runs_by_seed[seed_key] = payload
+            if representative_payload is None:
+                representative_payload = payload
+
+        if not runs_by_seed:
+            missing_conditions.append(cond)
+            continue
+
+        selected[cond] = {
+            "runs_by_seed": runs_by_seed,
+            "representative": representative_payload,
+        }
+
+    if anchor_condition not in selected:
+        if selected:
+            anchor_condition = next(iter(selected.keys()))
+        else:
+            raise FileNotFoundError(
+                "No matching runs found for unverifiable_compare under eval_results/custom. "
+                "Run eval first, or relax --dataset/--rarr-model/--seed filters."
+            )
+
+    anchor_rep = selected[anchor_condition]["representative"]
+    anchor_entries = anchor_rep["entries"]
+    anchor_by_key = anchor_rep["by_key"]
+
+    unverifiable_keys: list[tuple[str, str | int]] = []
+    for entry in anchor_entries:
+        key = _entry_key(entry)
+        if key is None:
+            continue
+        if _entry_is_unverifiable_by_gold_label(entry):
+            unverifiable_keys.append(key)
+
+    dedup_unverifiable_keys = list(dict.fromkeys(unverifiable_keys))
+
+    per_condition: dict[str, Any] = {}
+    for cond in display_conditions:
+        payload = selected.get(cond)
+        if not payload:
+            continue
+        runs_by_seed = payload["runs_by_seed"]
+        anchor_runs_by_seed = selected[anchor_condition]["runs_by_seed"]
+        common_seed_keys = sorted(set(anchor_runs_by_seed) & set(runs_by_seed), key=str)
+        per_seed_metrics: list[dict[str, Any]] = []
+        for seed_key in common_seed_keys:
+            seed_anchor = anchor_runs_by_seed[seed_key]
+            seed_target = runs_by_seed[seed_key]
+            seed_unverif_keys: list[tuple[str, str | int]] = []
+            for entry in seed_anchor["entries"]:
+                key = _entry_key(entry)
+                if key is not None and _entry_is_unverifiable_by_gold_label(entry):
+                    seed_unverif_keys.append(key)
+            seed_unverif_keys = list(dict.fromkeys(seed_unverif_keys))
+            by_key = seed_target["by_key"]
+            evaluated_keys = [k for k in seed_unverif_keys if k in by_key]
+            total = len(evaluated_keys)
+            correct = sum(1 for k in evaluated_keys if bool(by_key[k].get("result", False)))
+            accuracy = (correct / total) if total else None
+            overall_accuracy = (seed_target.get("meta") or {}).get("accuracy")
+            per_seed_metrics.append(
+                {
+                    "seed": seed_target.get("seed"),
+                    "seed_key": seed_key,
+                    "rows_on_unverifiable_subset": total,
+                    "correct_on_unverifiable_subset": correct,
+                    "accuracy_on_unverifiable_subset": accuracy,
+                    "overall_accuracy": overall_accuracy,
+                }
+            )
+
+        rows_mean, rows_std = _mean_std([m["rows_on_unverifiable_subset"] for m in per_seed_metrics])
+        correct_mean, correct_std = _mean_std([m["correct_on_unverifiable_subset"] for m in per_seed_metrics])
+        acc_mean, acc_std = _mean_std([
+            m["accuracy_on_unverifiable_subset"] for m in per_seed_metrics if isinstance(m["accuracy_on_unverifiable_subset"], (int, float))
+        ])
+        overall_mean, overall_std = _mean_std([
+            m["overall_accuracy"] for m in per_seed_metrics if isinstance(m["overall_accuracy"], (int, float))
+        ])
+        rep = payload["representative"]
+        per_condition[cond] = {
+            "run_log": str(rep["run_log_path"]),
+            "rows_total": len(rep["entries"]),
+            "seed_count": len(per_seed_metrics),
+            "seed_keys": common_seed_keys,
+            "per_seed": per_seed_metrics,
+            "rows_on_unverifiable_subset": rows_mean,
+            "rows_on_unverifiable_subset_std": rows_std,
+            "correct_on_unverifiable_subset": correct_mean,
+            "correct_on_unverifiable_subset_std": correct_std,
+            "accuracy_on_unverifiable_subset": acc_mean,
+            "accuracy_on_unverifiable_subset_std": acc_std,
+            "overall_accuracy": overall_mean,
+            "overall_accuracy_std": overall_std,
+            "run_id": (rep.get("meta") or {}).get("run_id"),
+        }
+
+    anchor_stats = per_condition.get(anchor_condition)
+    anchor_subset_acc = anchor_stats.get("accuracy_on_unverifiable_subset") if isinstance(anchor_stats, dict) else None
+    anchor_overall_acc = anchor_stats.get("overall_accuracy") if isinstance(anchor_stats, dict) else None
+
+    for cond in display_conditions:
+        stats = per_condition.get(cond)
+        if not isinstance(stats, dict):
+            continue
+        subset_acc = stats.get("accuracy_on_unverifiable_subset")
+        overall_acc = stats.get("overall_accuracy")
+        stats["gain_vs_anchor_subset_pct"] = (
+            ((subset_acc - anchor_subset_acc) / anchor_subset_acc) * 100.0
+            if (
+                isinstance(subset_acc, (int, float))
+                and isinstance(anchor_subset_acc, (int, float))
+                and anchor_subset_acc != 0
+            )
+            else None
+        )
+        stats["gain_vs_anchor_overall_pct"] = (
+            ((overall_acc - anchor_overall_acc) / anchor_overall_acc) * 100.0
+            if (
+                isinstance(overall_acc, (int, float))
+                and isinstance(anchor_overall_acc, (int, float))
+                and anchor_overall_acc != 0
+            )
+            else None
+        )
+
+    rows: list[dict[str, Any]] = []
+    for key in dedup_unverifiable_keys:
+        anchor_entry = anchor_by_key.get(key, {})
+        row: dict[str, Any] = {
+            "key_type": key[0],
+            "key": key[1],
+            "claim": str(anchor_entry.get("prompt", "") or "").strip(),
+            "gold_label": str(anchor_entry.get("gold_label", "") or "").strip().lower(),
+            "anchor_condition": anchor_condition,
+            "anchor_is_unverifiable": _entry_is_unverifiable_by_gold_label(anchor_entry),
+            "per_condition": {},
+        }
+        for cond in display_conditions:
+            payload = selected.get(cond)
+            if not payload:
+                row["per_condition"][cond] = None
+                continue
+            representative = payload.get("representative") or {}
+            entry = representative.get("by_key", {}).get(key)
+            if entry is None:
+                row["per_condition"][cond] = None
+                continue
+            row["per_condition"][cond] = {
+                "pred_label": str(entry.get("pred_label", "") or "").strip().lower(),
+                "pred_bucket": str(entry.get("pred_bucket", "") or "").strip().lower(),
+                "correct": bool(entry.get("result", False)),
+                "has_conflicting_signal": _entry_has_conflicting_signal(entry),
+            }
+        rows.append(row)
+
+    summary = summary_template(dataset or "custom", "unverifiable_compare", len(dedup_unverifiable_keys))
+    summary["anchor_condition"] = anchor_condition
+    summary["anchor_run_log"] = str(anchor_rep["run_log_path"])
+    summary["unverifiable_rows_anchor"] = len(dedup_unverifiable_keys)
+    summary["compare_conditions"] = display_conditions
+    summary["missing_conditions"] = missing_conditions
+    summary["per_condition"] = per_condition
     return summary, rows
 
 
@@ -537,6 +1263,62 @@ def _print_summary(summary: dict[str, Any]) -> None:
                 print(f"  {key}: {value}")
         return
 
+    if summary.get("condition") == "conflict_compare":
+        print(f"anchor_condition: {summary.get('anchor_condition')}")
+        print(f"anchor_run_log: {summary.get('anchor_run_log')}")
+        print(f"conflict_rows_anchor: {summary.get('conflict_rows_anchor')}")
+        missing = summary.get("missing_conditions", [])
+        if isinstance(missing, list) and missing:
+            print(f"missing_conditions: {', '.join(str(x) for x in missing)}")
+        per_condition = summary.get("per_condition", {})
+        if isinstance(per_condition, dict):
+            print("per-condition on conflict subset:")
+            for cond in summary.get("compare_conditions", []):
+                stats = per_condition.get(cond)
+                if not isinstance(stats, dict):
+                    print(f"  {cond}: <no matching run>")
+                    continue
+                print(
+                    f"  {cond}: n_seeds={stats.get('seed_count', 0)}, "
+                    f"rows={stats.get('rows_on_conflict_subset', 0)}, rows_std={stats.get('rows_on_conflict_subset_std')}, "
+                    f"correct={stats.get('correct_on_conflict_subset', 0)}, correct_std={stats.get('correct_on_conflict_subset_std')}, "
+                    f"acc={stats.get('accuracy_on_conflict_subset')}, "
+                    f"acc_std={stats.get('accuracy_on_conflict_subset_std')}, "
+                    f"overall_acc={stats.get('overall_accuracy')}, "
+                    f"overall_acc_std={stats.get('overall_accuracy_std')}, "
+                    f"gain_pct={stats.get('gain_vs_anchor_subset_pct')}, "
+                    f"overall_gain_pct={stats.get('gain_vs_anchor_overall_pct')}"
+                )
+        return
+
+    if summary.get("condition") == "unverifiable_compare":
+        print(f"anchor_condition: {summary.get('anchor_condition')}")
+        print(f"anchor_run_log: {summary.get('anchor_run_log')}")
+        print(f"unverifiable_rows_anchor: {summary.get('unverifiable_rows_anchor')}")
+        missing = summary.get("missing_conditions", [])
+        if isinstance(missing, list) and missing:
+            print(f"missing_conditions: {', '.join(str(x) for x in missing)}")
+        per_condition = summary.get("per_condition", {})
+        if isinstance(per_condition, dict):
+            print("per-condition on unverified-label subset:")
+            for cond in summary.get("compare_conditions", []):
+                stats = per_condition.get(cond)
+                if not isinstance(stats, dict):
+                    print(f"  {cond}: <no matching run>")
+                    continue
+                print(
+                    f"  {cond}: n_seeds={stats.get('seed_count', 0)}, "
+                    f"rows={stats.get('rows_on_unverifiable_subset', 0)}, rows_std={stats.get('rows_on_unverifiable_subset_std')}, "
+                    f"correct={stats.get('correct_on_unverifiable_subset', 0)}, correct_std={stats.get('correct_on_unverifiable_subset_std')}, "
+                    f"acc={stats.get('accuracy_on_unverifiable_subset')}, "
+                    f"acc_std={stats.get('accuracy_on_unverifiable_subset_std')}, "
+                    f"overall_acc={stats.get('overall_accuracy')}, "
+                    f"overall_acc_std={stats.get('overall_accuracy_std')}, "
+                    f"gain_pct={stats.get('gain_vs_anchor_subset_pct')}, "
+                    f"overall_gain_pct={stats.get('gain_vs_anchor_overall_pct')}"
+                )
+        return
+
     if summary.get("placeholder"):
         print(summary.get("message", "placeholder"))
 
@@ -572,6 +1354,103 @@ def main() -> None:
 
         print(f"[analyze_data] Saved summary: {summary_path}")
         print(f"[analyze_data] Saved per-claim conflict: {rows_path}")
+        return
+
+    if args.condition == "conflict_compare":
+        compare_conditions = _parse_compare_conditions(args.compare_conditions)
+        if not compare_conditions:
+            raise ValueError("--compare-conditions must include at least one condition")
+        anchor_condition = _parse_compare_conditions(args.anchor_condition.strip())[0] if args.anchor_condition.strip() else ""
+        if anchor_condition and anchor_condition not in compare_conditions:
+            compare_conditions = [anchor_condition, *compare_conditions]
+        summary, rows = _condition_conflict_compare(
+            dataset=args.dataset,
+            rarr_model=args.rarr_model,
+            seed=args.seed,
+            compare_conditions=compare_conditions,
+            anchor_condition=anchor_condition or "raw",
+            max_rows=args.max_rows,
+        )
+        _print_summary(summary)
+
+        summary_path = output_dir / "summary.json"
+        rows_path = output_dir / "per_claim_conflict_compare.jsonl"
+        with open(summary_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        with open(rows_path, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+        print(f"[analyze_data] Saved summary: {summary_path}")
+        print(f"[analyze_data] Saved per-claim conflict-compare: {rows_path}")
+        return
+
+    if args.condition == "compare":
+        compare_conditions = _parse_compare_conditions(args.compare_conditions)
+        if not compare_conditions:
+            raise ValueError("--compare-conditions must include at least one condition")
+        anchor_condition = _parse_compare_conditions(args.anchor_condition.strip())[0] if args.anchor_condition.strip() else ""
+        if anchor_condition and anchor_condition not in compare_conditions:
+            compare_conditions = [anchor_condition, *compare_conditions]
+
+        conflict_summary, conflict_rows = _condition_conflict_compare(
+            dataset=args.dataset,
+            rarr_model=args.rarr_model,
+            seed=args.seed,
+            compare_conditions=compare_conditions,
+            anchor_condition=anchor_condition or "raw",
+            max_rows=args.max_rows,
+        )
+        unverif_summary, unverif_rows = _condition_unverifiable_compare(
+            dataset=args.dataset,
+            rarr_model=args.rarr_model,
+            seed=args.seed,
+            compare_conditions=compare_conditions,
+            anchor_condition=anchor_condition or "raw",
+            max_rows=args.max_rows,
+        )
+
+        print("\n=== Compare Report: Conflict Subset ===")
+        _print_summary(conflict_summary)
+        print("\n=== Compare Report: Unverified-Label Subset ===")
+        _print_summary(unverif_summary)
+
+        conflict_summary_path = output_dir / "summary_conflict_compare.json"
+        conflict_rows_path = output_dir / "per_claim_conflict_compare.jsonl"
+        unverif_summary_path = output_dir / "summary_unverifiable_compare.json"
+        unverif_rows_path = output_dir / "per_claim_unverifiable_compare.jsonl"
+        bundled_summary_path = output_dir / "summary.json"
+
+        with open(conflict_summary_path, "w", encoding="utf-8") as handle:
+            json.dump(conflict_summary, handle, indent=2, sort_keys=True)
+        with open(conflict_rows_path, "w", encoding="utf-8") as handle:
+            for row in conflict_rows:
+                handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+        with open(unverif_summary_path, "w", encoding="utf-8") as handle:
+            json.dump(unverif_summary, handle, indent=2, sort_keys=True)
+        with open(unverif_rows_path, "w", encoding="utf-8") as handle:
+            for row in unverif_rows:
+                handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+        bundled_summary = {
+            "dataset": args.dataset,
+            "condition": "compare",
+            "compare_conditions": compare_conditions,
+            "anchor_condition": anchor_condition or "raw",
+            "reports": {
+                "conflict_compare": conflict_summary,
+                "unverifiable_compare": unverif_summary,
+            },
+        }
+        with open(bundled_summary_path, "w", encoding="utf-8") as handle:
+            json.dump(bundled_summary, handle, indent=2, sort_keys=True)
+
+        print(f"[analyze_data] Saved conflict summary: {conflict_summary_path}")
+        print(f"[analyze_data] Saved conflict per-claim: {conflict_rows_path}")
+        print(f"[analyze_data] Saved unverifiable summary: {unverif_summary_path}")
+        print(f"[analyze_data] Saved unverifiable per-claim: {unverif_rows_path}")
+        print(f"[analyze_data] Saved bundled summary: {bundled_summary_path}")
         return
 
     if not args.dataset.strip():

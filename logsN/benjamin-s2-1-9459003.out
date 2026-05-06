@@ -1,0 +1,52 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 1 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=liar
+Default dataset path: test=./data/liar/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/liar/test/data.jsonl --condition structural
+Running: python ./scripts/run_rarr_eval.py ./data/liar/test/data.jsonl --condition structural --max-rows  --rarr-model gpt-5-mini --structural --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards
+Structural mode is on (shards: /network/scratch/k/kondrupe/credibench-neighbors_serving_shards)
+Run settings: condition=structural, backend=openai, max_rows=all, seed=1, num_rounds_qgen=3, max_evidences_per_question=5
+Structural settings: hops=2, hook_mode=latest, months_back=3, hook_timeout_s=40
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (198 total runs)
+Run finished: rarr-dataset-20260504-185518-218217
+Rows processed: 600 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-185518-218217
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-185518-218217/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-185518-218217/meta_eval.json
+Run summary:
+  rows scored: 1
+  avg evidence/row: 4.00
+  avg evidence/benchmark query: 4.00
+  avg evidence/row (with detail): 4.00
+  total evidence retrieved: 4
+  search timeouts: 415
+  serper->ddg fallbacks: 1
+  provider failures: 828
+  queries with no results: 415
+  structural hops: 2 | seed: 1
+  structural context coverage (queries): 1/600 (0.2%)
+  structural context coverage (evidence): 1/840 (0.1%)
+  structural covered-only eval (this run's primary accuracy basis): rows=1 (covered=1, uncovered=599), accuracy=1.0
+  accuracy: 1.0
+  label audit: rows=600, raw_unique=6, fallback=0, normalized(true=321, false=279, unverified=0)
+  true: t=1, f=0, u=0, a=0
+  false: t=0, f=0, u=0, a=0
+  unverified: t=0, f=0, u=0, a=0
+  sanity first-sample:
+    claim: charlie crist broke the quarter record for fundraising in a u.s. senate race in florida.
+    first query: charlie crist broke the quarter record for fundraising in a u.s. senate race in florida.
+    final verifier prompt: Claim: charlie crist broke the quarter record for fundraising in a u.s. senate race in florida.
+Search query: charlie crist broke the quarter record for fundraising in a u.s. senate race in florida.
+Evidence: By Roll Call Staff Posted July 9, 2009 at 12:21pm Florida Republican Gov. Charlie Crist announced Thursday he has received more than $4.3 million in contributions for his 2010 U.S. Senate bid, and, as expected, tops his closest competitors. Crist’s major primary opponent, former state House Speaker Marco Rubio, announced $340,000 in contributions during the second quarter from April through June. Rubio’s total receipts for the first quarter were $255,000. The top Democrat in the race, Rep. Kendrick B. Meek, announced $1.2 million raised this quarter for a total of $3 million raised, including transfers.
+
+Return exactly one label:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: By Roll Call Staff Posted July 9, 2009 at 12:21pm Florida Republican Gov. Charlie Crist announced Thursday he has received more than $4.3 million in contributions for his 2010 U.S. Senate bid, and, as expected, tops his closest competitors. Crist’s major primary opponent, former state House Speaker Marco Rubio, anno...
+    verifier answer: unverifiable (decision=unverifiable)
+    gold truth: true

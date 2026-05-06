@@ -1,0 +1,68 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 3 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=fakecovid
+Default dataset path: test=./data/fakecovid/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition raw
+Running: python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition raw --max-rows  --rarr-model gpt-5-mini
+Run settings: condition=raw, backend=openai, max_rows=all, seed=3, num_rounds_qgen=3, max_evidences_per_question=5
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (180 total runs)
+Run finished: rarr-dataset-20260505-011221-839130
+Rows processed: 408 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011221-839130
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011221-839130/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011221-839130/meta_eval.json
+Run summary:
+  rows scored: 408
+  avg evidence/row: 2.28
+  avg evidence/benchmark query: 2.28
+  avg evidence/row (with detail): 2.28
+  total evidence retrieved: 932
+  search timeouts: 165
+  serper->ddg fallbacks: 1
+  provider failures: 341
+  queries with no results: 184
+  accuracy: 0.47058823529411764
+  label audit: rows=408, raw_unique=33, fallback=7, normalized(true=13, false=231, unverified=164)
+  label audit fallback examples: Misattributed=2, News=2, Suspicions=1, HALF TRUTH=1, Partially false=1
+  true: t=5, f=1, u=6, a=1
+  false: t=12, f=97, u=116, a=6
+  unverified: t=18, f=54, u=90, a=2
+  sanity first-sample:
+    claim: People who got a flu shot are at a greater risk from COVID-19.
+    first query: People who got a flu shot are at a greater risk from COVID-19.
+    final verifier prompt: Claim: People who got a flu shot are at a greater risk from COVID-19.
+Search query: People who got a flu shot are at a greater risk from COVID-19.
+Evidence: But social media posts are singing a different tune, cautioning against the flu shot by falsely suggesting that the vaccine increases the chances of getting COVID-19 by “36%.” The post, republished elsewhere , pointed to “peer-reviewed, published studies” to “prove” that advice offered by CNN anchor Anderson Cooper in March for people to get the flu shot “may have been the worst advice he could have given the public.” That’s wrong. First of all, experts say there has been no study connecting the flu shot with an increased risk of SARS-CoV-2, the novel coronavirus that causes COVID-19 .
+
+Return exactly one label:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: But social media posts are singing a different tune, cautioning against the flu shot by falsely suggesting that the vaccine increases the chances of getting COVID-19 by “36%.” The post, republished elsewhere , pointed to “peer-reviewed, published studies” to “prove” that advice offered by CNN anchor Anderson Cooper...
+    verifier answer: disagrees (decision=disagrees)
+    gold truth: unverified

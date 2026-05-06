@@ -1,0 +1,12 @@
+[=== Module python/3.10 loaded ===]
+Couldn't find split file: ./data/rumpors/test/data.jsonl
+Available local datasets under ./data:
+  - benjamin-political-news
+  - claimskg
+  - coaid
+  - ct-fan
+  - defakts
+  - fakecovid
+  - isot-fake-news
+  - liar
+  - rumors

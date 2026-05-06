@@ -1,0 +1,77 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 5 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Another job is already refreshing shared assets. Waiting for /home/mila/k/kondrupe/context/data/.initialize_run_assets.lock ...
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=benjamin-political-news
+Default dataset path: test=./data/benjamin-political-news/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/benjamin-political-news/test/data.jsonl --condition structural
+Running: python ./scripts/run_rarr_eval.py ./data/benjamin-political-news/test/data.jsonl --condition structural --max-rows  --rarr-model gpt-5-mini --structural --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards
+Structural mode is on (shards: /network/scratch/k/kondrupe/credibench-neighbors_serving_shards)
+Run settings: condition=structural, backend=openai, max_rows=all, seed=5, num_rounds_qgen=3, max_evidences_per_question=5
+Structural settings: hops=1, hook_mode=temporal, months_back=3, hook_timeout_s=40
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (64 total runs)
+Run finished: rarr-dataset-20260504-202617-867395
+Rows processed: 68 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-202617-867395
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-202617-867395/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-202617-867395/meta_eval.json
+Run summary:
+  rows scored: 55
+  avg evidence/row: 4.38
+  avg evidence/benchmark query: 4.38
+  avg evidence/row (with detail): 4.38
+  total evidence retrieved: 241
+  search timeouts: 0
+  serper->ddg fallbacks: 0
+  provider failures: 0
+  queries with no results: 0
+  structural hops: 1 | seed: 5
+  structural context coverage (queries): 55/68 (80.9%)
+  structural context coverage (evidence): 113/287 (39.4%)
+  structural covered-only eval (this run's primary accuracy basis): rows=55 (covered=55, uncovered=13), accuracy=0.6545454545454545
+  accuracy: 0.6545454545454545
+  label audit: rows=68, raw_unique=4, fallback=0, normalized(true=27, false=26, unverified=15)
+  true: t=18, f=3, u=1, a=1
+  false: t=2, f=16, u=2, a=3
+  unverified: t=0, f=7, u=2, a=0
+  sanity first-sample:
+    claim: trump using brown paper bag test at rally's no dark skin blacks allowed
+    first query: trump using brown paper bag test at rally's no dark skin blacks allowed
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: trump using brown paper bag test at rally's no dark skin blacks allowed
+Search query: trump using brown paper bag test at rally's no dark skin blacks allowed
+Evidence snippet: The brown paper bag test was a form of discrimination used to exclude dark-skinned Black people by comparing their skin tone to the color of a brown paper bag. Those who were lighter than the bag were allowed into the club. Those whose skin failed the test were rejected. There are stories of Black fraternities and sororities, professional organizations, and even churches using the test to determine membership.
+Source/domain context: Source context for wordpress.com: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=ac.7uhr15(1), ac.gather(1), ac.graham(1), ac.startupschool(1), ac.telescope(1), academy.abcdogs(1), academy.acort(1), academy.aerco(1). Higher repeated_peers and cross-month consistency indicate stronger structural prior.
+
+If the source/domain context is temporal (history...
+    retrieved answer snippet: The brown paper bag test was a form of discrimination used to exclude dark-skinned Black people by comparing their skin tone to the color of a brown paper bag. Those who were lighter than the bag were allowed into the club. Those whose skin failed the test were rejected. There are stories of Black fraternities and s...
+    structural/score context: Source context for wordpress.com: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=ac.7uhr15(1), ac.gather(1), ac.graham(1), ac.startupschool(1), ac.telescope(1), academy.abcdogs(1), academy.aco...
+    verifier answer: unverifiable (decision=unverifiable)
+    gold truth: false

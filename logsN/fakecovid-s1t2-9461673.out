@@ -1,0 +1,76 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 2 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Another job is already refreshing shared assets. Waiting for /home/mila/k/kondrupe/context/data/.initialize_run_assets.lock ...
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=fakecovid
+Default dataset path: test=./data/fakecovid/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition structural
+Running: python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition structural --max-rows  --rarr-model gpt-5-mini --structural --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards
+Structural mode is on (shards: /network/scratch/k/kondrupe/credibench-neighbors_serving_shards)
+Run settings: condition=structural, backend=openai, max_rows=all, seed=2, num_rounds_qgen=3, max_evidences_per_question=5
+Structural settings: hops=1, hook_mode=temporal, months_back=3, hook_timeout_s=40
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (189 total runs)
+Run finished: rarr-dataset-20260505-011721-509915
+Rows processed: 408 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011721-509915
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011721-509915/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011721-509915/meta_eval.json
+Run summary:
+  rows scored: 63
+  avg evidence/row: 4.49
+  avg evidence/benchmark query: 4.49
+  avg evidence/row (with detail): 4.49
+  total evidence retrieved: 283
+  search timeouts: 325
+  serper->ddg fallbacks: 0
+  provider failures: 654
+  queries with no results: 329
+  structural hops: 1 | seed: 2
+  structural context coverage (queries): 63/408 (15.4%)
+  structural context coverage (evidence): 118/330 (35.8%)
+  structural covered-only eval (this run's primary accuracy basis): rows=63 (covered=63, uncovered=345), accuracy=0.6190476190476191
+  accuracy: 0.6190476190476191
+  label audit: rows=408, raw_unique=33, fallback=7, normalized(true=13, false=231, unverified=164)
+  label audit fallback examples: Misattributed=2, News=2, Suspicions=1, HALF TRUTH=1, Partially false=1
+  true: t=0, f=0, u=0, a=0
+  false: t=2, f=37, u=4, a=3
+  unverified: t=1, f=12, u=2, a=2
+  sanity first-sample:
+    claim: People who got a flu shot are at a greater risk from COVID-19.
+    first query: People who got a flu shot are at a greater risk from COVID-19.
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: People who got a flu shot are at a greater risk from COVID-19.
+Search query: People who got a flu shot are at a greater risk from COVID-19.
+Evidence snippet: Furthermore, it has been reported that influenza vaccination is associated with a lower risk of COVID-19 infection 3 – 5 . Older adults and patients with comorbidities are at greater risk of COVID-19 infection, and they are also more likely to develop severe illness after infection 11 , 12 . Given that the influenza vaccine is safe and currently available, it may be a quick and safe option to slow down the COVID-19 pandemic. Limited evidence exists about the association between influenza vaccination and the incidence of COVID-19 in elder population.
+Source/domain context: Source context for nih.gov: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=ac.coki.open(1), ac.diabetes(1), academy.hnfc(1), academy.iaexpert(1), academy.snow.report(1), academy.spanish(1), ae.maisonprivee(1), ae.mbrf(1). Higher...
+    retrieved answer snippet: Furthermore, it has been reported that influenza vaccination is associated with a lower risk of COVID-19 infection 3 – 5 . Older adults and patients with comorbidities are at greater risk of COVID-19 infection, and they are also more likely to develop severe illness after infection 11 , 12 . Given that the influenza...
+    structural/score context: Source context for nih.gov: mode=temporal, months_considered=1, month_neighbor_counts=[mar2025:8], unique_peers=8, peer_mentions=8, repeated_peers=0, top_peers=ac.coki.open(1), ac.diabetes(1), academy.hnfc(1), academy.iaexpert(1), academy.snow.report(1), academy.spanish(1), ae...
+    verifier answer: disagrees (decision=disagrees)
+    gold truth: unverified

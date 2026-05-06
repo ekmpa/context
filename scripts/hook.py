@@ -349,6 +349,8 @@ def batch_one_hop_neighbors_by_month(
     dst_col: str = "dst",
     csv_delimiter: str = ",",
     csv_has_header: bool = True,
+    months: list[str] | None = None,
+    max_neighbors_per_month: int = 0,
 ) -> dict[str, dict[str, list[str]]]:
     input_domains = sorted({d.strip().lower() for d in domains if d.strip()})
     if not input_domains:
@@ -356,12 +358,15 @@ def batch_one_hop_neighbors_by_month(
 
     month_paths = normalize_month_paths(month_to_file)
     variant_sets = {domain: set(_domain_variants(domain)) for domain in input_domains}
+    month_plan = months if months else list(MONTHS)
+    month_lookup = set(month_plan)
+
     result_sets: dict[str, dict[str, set[str]]] = {
-        domain: {month: set() for month in MONTHS}
+        domain: {month: set() for month in month_plan}
         for domain in input_domains
     }
 
-    for month in MONTHS:
+    for month in month_plan:
         source = month_paths.get(month)
         if source is None:
             continue
@@ -372,15 +377,16 @@ def batch_one_hop_neighbors_by_month(
             for domain in input_domains:
                 variants = variant_sets[domain]
                 if src in variants and dst not in variants:
-                    result_sets[domain][month].add(dst)
+                    if max_neighbors_per_month <= 0 or len(result_sets[domain][month]) < max_neighbors_per_month:
+                        result_sets[domain][month].add(dst)
                 elif dst in variants and src not in variants:
-                    result_sets[domain][month].add(src)
+                    if max_neighbors_per_month <= 0 or len(result_sets[domain][month]) < max_neighbors_per_month:
+                        result_sets[domain][month].add(src)
 
     return {
-        domain: {month: sorted(result_sets[domain][month]) for month in MONTHS}
+        domain: {month: sorted(result_sets[domain][month]) for month in month_plan}
         for domain in input_domains
     }
-
 
 def _stable_shard_id(domain: str, shard_count: int) -> int:
     if shard_count <= 0:
@@ -716,12 +722,20 @@ def _query_temporal_neighbors(
     dst_col: str,
     csv_delimiter: str,
     csv_has_header: bool,
+    months_back: int = 0,
+    max_neighbors_per_month: int = 0,
 ) -> dict[str, dict[str, list[str]]]:
+    month_plan = list(MONTHS)
+    if months_back > 0:
+        month_plan = list(MONTHS[-months_back:])
+
     if serving_shards_dir:
         return _batch_one_hop_neighbors_by_month_from_serving_shards(
             domains,
             serving_shards_dir=serving_shards_dir,
             shard_count=shard_count,
+            months=month_plan,
+            max_neighbors_per_month=max_neighbors_per_month,
         )
     return batch_one_hop_neighbors_by_month(
         domains,
@@ -730,8 +744,9 @@ def _query_temporal_neighbors(
         dst_col=dst_col,
         csv_delimiter=csv_delimiter,
         csv_has_header=csv_has_header,
+        months=month_plan,
+        max_neighbors_per_month=max_neighbors_per_month,
     )
-
 
 def _query_latest_neighbors(
     domains: list[str],
@@ -771,6 +786,8 @@ def _batch_one_hop_neighbors_by_month_from_serving_shards(
     *,
     serving_shards_dir: str | Path,
     shard_count: int,
+    months: list[str] | None = None,
+    max_neighbors_per_month: int = 0,
 ) -> dict[str, dict[str, list[str]]]:
     input_domains = sorted({d.strip().lower() for d in domains if d.strip()})
     if not input_domains:
@@ -785,8 +802,10 @@ def _batch_one_hop_neighbors_by_month_from_serving_shards(
             shard_id = _stable_shard_id(variant, shard_count)
             shard_variant_to_inputs.setdefault(shard_id, {}).setdefault(variant, set()).add(input_domain)
 
+    month_plan = months if months else list(MONTHS)
+    month_lookup = set(month_plan)
     result_sets: dict[str, dict[str, set[str]]] = {
-        domain: {month: set() for month in MONTHS}
+        domain: {month: set() for month in month_plan}
         for domain in input_domains
     }
 
@@ -801,17 +820,19 @@ def _batch_one_hop_neighbors_by_month_from_serving_shards(
                     domain = str(row.get("domain", "")).strip().lower()
                     month = str(row.get("month", "")).strip().lower()
                     neighbor = str(row.get("neighbor", "")).strip().lower()
-                    if domain not in variant_map or month not in result_sets[input_domains[0]] or not neighbor:
+                    if domain not in variant_map or month not in month_lookup or not neighbor:
                         continue
                     for input_domain in variant_map[domain]:
                         if neighbor in variant_sets[input_domain]:
+                            continue
+                        if max_neighbors_per_month > 0 and len(result_sets[input_domain][month]) >= max_neighbors_per_month:
                             continue
                         result_sets[input_domain][month].add(neighbor)
             except EOFError:
                 logger.warning("[shards] truncated gzip shard %s — partial data used", shard_file)
 
     return {
-        domain: {month: sorted(result_sets[domain][month]) for month in MONTHS}
+        domain: {month: sorted(result_sets[domain][month]) for month in month_plan}
         for domain in input_domains
     }
 
@@ -1015,6 +1036,18 @@ def main() -> None:
         help="Cap on number of domains expanded per hop in latest mode (default: 10)",
     )
     parser.add_argument(
+        "--temporal-months-back",
+        type=int,
+        default=0,
+        help="For temporal mode, only include the latest N months (0 means all months)",
+    )
+    parser.add_argument(
+        "--max-neighbors-per-month",
+        type=int,
+        default=0,
+        help="For temporal mode, cap neighbors kept per month (0 means no cap)",
+    )
+    parser.add_argument(
         "--credibench",
         action="store_true",
         help="Read monthly edges directly from the CrediBench dataset on Hugging Face",
@@ -1064,6 +1097,10 @@ def main() -> None:
         parser.error("--hops must be a positive integer")
     if args.max_domains_per_hop <= 0:
         parser.error("--max-domains-per-hop must be a positive integer")
+    if args.temporal_months_back < 0:
+        parser.error("--temporal-months-back must be >= 0")
+    if args.max_neighbors_per_month < 0:
+        parser.error("--max-neighbors-per-month must be >= 0")
 
     month_map = parse_month_file_args(args.month_file)
     if args.credibench:
@@ -1105,6 +1142,8 @@ def main() -> None:
                 dst_col=args.dst_col,
                 csv_delimiter=args.csv_delimiter,
                 csv_has_header=not args.csv_no_header,
+                months_back=args.temporal_months_back,
+                max_neighbors_per_month=args.max_neighbors_per_month,
             )
         else:
             result = _query_latest_neighbors(
@@ -1141,6 +1180,8 @@ def main() -> None:
             dst_col=args.dst_col,
             csv_delimiter=args.csv_delimiter,
             csv_has_header=not args.csv_no_header,
+            months_back=args.temporal_months_back,
+            max_neighbors_per_month=args.max_neighbors_per_month,
         )[query_domain]
     else:
         result = _query_latest_neighbors(

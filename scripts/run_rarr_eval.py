@@ -16,7 +16,6 @@ LOCAL_CORE_DIR = SCRIPTS_DIR / "context_core"
 DEFAULT_STRUCTURAL_SHARDS_DIR = "/network/scratch/k/kondrupe/credibench-neighbors_serving_shards"
 DATA_STATS_DIR = ROOT_DIR / "data_stats"
 MODEL_BACKEND_PREFIX_MAP: dict[str, tuple[str, ...]] = {
-    # Extend here as new model families are added.
     "hf-local": ("qwen", "llama"),
     "openai": ("gpt", "o1", "o3", "o4", "text-"),
 }
@@ -62,6 +61,8 @@ FALSE_LABEL_ALIASES = {
     "pants-on-fire",
     "barely-true",
     "barely true",
+    "mostly false",
+    "mostly-false",
     "no",
 }
 
@@ -71,8 +72,10 @@ UNVERIFIED_LABEL_ALIASES = {
     "undefined",
     "unknown",
     "uncertain",
+    "unproven",
     "not enough info",
     "not enough information",
+    "no evidence",
     "nei",
     "neutral",
     "ambiguous",
@@ -82,6 +85,15 @@ UNVERIFIED_LABEL_ALIASES = {
     "partly true",
     "partly false",
     "misleading",
+    "explanatory",
+    "miscaptioned",
+    "outdated",
+    "legend",
+    "legend rated",
+    "labeled satire",
+    "satire",
+    "opinion",
+    "correct attribution",
 }
 
 COMPACT_LABEL_MAP = {
@@ -90,6 +102,7 @@ COMPACT_LABEL_MAP = {
     "mostlytrue": "true",
     "halftrue": "true",
     "barelytrue": "false",
+    "mostlyfalse": "false",
 }
 
 
@@ -710,6 +723,11 @@ def _entry_evidence_count_and_third_party_coverage(entry: dict) -> tuple[int, bo
     return evidence_count, has_third_party_coverage
 
 
+def _entry_evidence_count_and_context_coverage(entry: dict) -> tuple[int, bool]:
+    """Return (evidence_count, has_nonempty_context) for one benchmark entry."""
+    return _entry_evidence_count_and_third_party_coverage(entry)
+
+
 def _compute_eval_slice(
     *,
     entries: list[dict],
@@ -789,11 +807,13 @@ def _build_meta_eval(
     )
 
     third_party_meta = None
-    if condition == "third-party":
+    structural_meta = None
+    covered_metrics = None
+    if condition in {"third-party", "structural"}:
         covered_entries = []
         covered_labels = [] if labels is not None else None
         for idx, entry in enumerate(entries):
-            _, covered = _entry_evidence_count_and_third_party_coverage(entry)
+            _, covered = _entry_evidence_count_and_context_coverage(entry)
             if not covered:
                 continue
             covered_entries.append(entry)
@@ -806,11 +826,31 @@ def _build_meta_eval(
             prediction_options=prediction_options,
             gold_options=gold_options,
         )
-        third_party_meta = {
-            "rows_with_scored_domain": len(covered_entries),
-            "rows_without_scored_domain": len(entries) - len(covered_entries),
+        coverage_meta = {
+            "rows_with_context": len(covered_entries),
+            "rows_without_context": len(entries) - len(covered_entries),
+            "query_coverage_ratio": (
+                (len(covered_entries) / len(entries)) if entries else 0.0
+            ),
             "covered_only_eval": covered_metrics,
+            "overall_eval": total_metrics,
         }
+        if condition == "third-party":
+            # Backward-compatible keys for downstream consumers.
+            third_party_meta = {
+                "rows_with_scored_domain": coverage_meta["rows_with_context"],
+                "rows_without_scored_domain": coverage_meta["rows_without_context"],
+                "covered_only_eval": coverage_meta["covered_only_eval"],
+                "overall_eval": coverage_meta["overall_eval"],
+                "query_coverage_ratio": coverage_meta["query_coverage_ratio"],
+            }
+        else:
+            structural_meta = coverage_meta
+
+    # Default reporting behavior:
+    # - raw/source_attr: report over all rows
+    # - third-party/structural: report only rows with non-empty context evidence
+    active_metrics = covered_metrics if covered_metrics is not None else total_metrics
 
     structural_hops: int | None = None
     if condition == "structural":
@@ -830,18 +870,25 @@ def _build_meta_eval(
         "structural_hops": structural_hops,
         "model_id": model_id,
         "model": model_info,
-        "rows_total": total_metrics["rows_total"],
-        "rows_scored": total_metrics["rows_scored"],
-        "accuracy": total_metrics["accuracy"],
-        "avg_evidence_per_row": total_metrics["avg_evidence_per_row"],
-        "avg_evidence_per_benchmark_query": total_metrics["avg_evidence_per_benchmark_query"],
-        "avg_evidence_per_row_with_detail": total_metrics["avg_evidence_per_row_with_detail"],
-        "total_evidence_retrieved": total_metrics["total_evidence_retrieved"],
+        "rows_total": active_metrics["rows_total"],
+        "rows_scored": active_metrics["rows_scored"],
+        "accuracy": active_metrics["accuracy"],
+        "avg_evidence_per_row": active_metrics["avg_evidence_per_row"],
+        "avg_evidence_per_benchmark_query": active_metrics["avg_evidence_per_benchmark_query"],
+        "avg_evidence_per_row_with_detail": active_metrics["avg_evidence_per_row_with_detail"],
+        "total_evidence_retrieved": active_metrics["total_evidence_retrieved"],
         "search_stats": search_stats or {},
-        "per_category_prediction_counts": total_metrics["per_category_prediction_counts"],
+        "per_category_prediction_counts": active_metrics["per_category_prediction_counts"],
         "label_audit": label_audit,
         "third_party": third_party_meta,
+        "structural": structural_meta,
     }
+
+
+def _percent(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return 100.0 * float(numerator) / float(denominator)
 
 
 def _write_compact_eval_reports(
@@ -961,7 +1008,8 @@ def _upsert_performance_log(meta: dict) -> None:
 
 
 def _default_run_id(hf_dataset: str) -> str:
-    now = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Include microseconds to avoid collisions when many jobs start in the same second.
+    now = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return ("rarr-hf-" if hf_dataset else "rarr-dataset-") + now
 
 
@@ -1075,19 +1123,52 @@ def run(args: argparse.Namespace) -> None:
     run_id = args.run_id or _default_run_id(args.hf_dataset)
     max_rows = args.max_rows if args.max_rows is not None else _parse_optional_max_rows(args.max_rows_flag)
     max_rows_display = "all" if max_rows is None else str(int(max_rows))
+    seed_text = os.getenv("RARR_SEED", "").strip()
+    seed_display = seed_text if seed_text else "unset"
+
+    structural_hops_display = None
+    structural_hook_mode_display = None
+    structural_months_back_display = None
+    structural_hook_timeout_display = None
+    if resolved_condition == "structural":
+        hops_text = os.getenv("RARR_STRUCTURAL_HOPS", "").strip()
+        structural_hops_display = hops_text if hops_text else "2"
+        structural_hook_mode_display = os.getenv("RARR_STRUCTURAL_HOOK_MODE", "temporal").strip() or "temporal"
+        structural_months_back_display = os.getenv("RARR_STRUCTURAL_MONTHS_BACK", "3").strip() or "3"
+        structural_hook_timeout_display = os.getenv("RARR_STRUCTURAL_HOOK_TIMEOUT", "8").strip() or "8"
 
     print(
         "Run settings: "
         f"condition={resolved_condition}, "
         f"backend={inferred_backend}, "
         f"max_rows={max_rows_display}, "
+        f"seed={seed_display}, "
         f"num_rounds_qgen={resolved_num_rounds_qgen}, "
         f"max_evidences_per_question={resolved_max_evidences}"
     )
+    if structural_hops_display is not None:
+        print(
+            "Structural settings: "
+            f"hops={structural_hops_display}, "
+            f"hook_mode={structural_hook_mode_display}, "
+            f"months_back={structural_months_back_display}, "
+            f"hook_timeout_s={structural_hook_timeout_display}"
+        )
     output_dir = ROOT_DIR / "eval_results" / "custom" / run_id
     if output_dir.exists():
         _safe_rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        # On shared filesystems, concurrent jobs can still race here.
+        if output_dir.is_dir():
+            pass
+        else:
+            fallback_run_id = f"{run_id}-{datetime.now().strftime('%f')}"
+            output_dir = ROOT_DIR / "eval_results" / "custom" / fallback_run_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            run_id = fallback_run_id
+            print(f"[run_rarr_eval] output directory collision; switched run_id to {run_id}")
 
     if args.hf_dataset:
         df = _load_hf_dataset(args.hf_dataset, args.hf_config, args.hf_split)
@@ -1262,16 +1343,59 @@ def run(args: argparse.Namespace) -> None:
     tp_total = ss.get("third_party_evidence_total", 0)
     tp_scored = ss.get("third_party_evidence_scored", 0)
     if tp_total > 0:
-        print(f"  third-party score coverage: {tp_scored}/{tp_total} ({100.0 * tp_scored / tp_total:.1f}%)")
+        print(f"  third-party evidence score coverage: {tp_scored}/{tp_total} ({100.0 * tp_scored / tp_total:.1f}%)")
+    if resolved_condition == "structural":
+        sq_total = int(ss.get("structural_queries_total", 0) or 0)
+        sq_with_ctx = int(ss.get("structural_queries_with_context", 0) or 0)
+        se_total = int(ss.get("structural_evidence_total", 0) or 0)
+        se_with_ctx = int(ss.get("structural_evidence_with_context", 0) or 0)
+        print(
+            f"  structural hops: {meta_payload.get('structural_hops')} | seed: {meta_payload.get('seed')}"
+        )
+        if sq_total > 0:
+            print(
+                "  structural context coverage (queries): "
+                f"{sq_with_ctx}/{sq_total} ({_percent(sq_with_ctx, sq_total):.1f}%)"
+            )
+        else:
+            print("  structural context coverage (queries): 0/0 (0.0%)")
+        if se_total > 0:
+            print(
+                "  structural context coverage (evidence): "
+                f"{se_with_ctx}/{se_total} ({_percent(se_with_ctx, se_total):.1f}%)"
+            )
+        else:
+            print("  structural context coverage (evidence): 0/0 (0.0%)")
     tp_meta = meta_payload.get("third_party") or {}
+    if resolved_condition == "third-party" and isinstance(tp_meta, dict):
+        covered = int(tp_meta.get("rows_with_scored_domain", 0) or 0)
+        uncovered = int(tp_meta.get("rows_without_scored_domain", 0) or 0)
+        total_rows = covered + uncovered
+        if total_rows > 0:
+            print(
+                f"  third-party query coverage: {covered}/{total_rows} "
+                f"({100.0 * covered / total_rows:.1f}%)"
+            )
     covered_eval = tp_meta.get("covered_only_eval") if isinstance(tp_meta, dict) else None
     if covered_eval:
         print(
-            "  third-party covered-only eval: "
+            "  third-party covered-only eval (this run's primary accuracy basis): "
             f"rows={covered_eval.get('rows_total', 0)} "
             f"(covered={tp_meta.get('rows_with_scored_domain', 0)}, "
             f"uncovered={tp_meta.get('rows_without_scored_domain', 0)}), "
             f"accuracy={covered_eval.get('accuracy')}"
+        )
+    structural_meta = meta_payload.get("structural") or {}
+    structural_covered_eval = (
+        structural_meta.get("covered_only_eval") if isinstance(structural_meta, dict) else None
+    )
+    if resolved_condition == "structural" and structural_covered_eval:
+        print(
+            "  structural covered-only eval (this run's primary accuracy basis): "
+            f"rows={structural_covered_eval.get('rows_total', 0)} "
+            f"(covered={structural_meta.get('rows_with_context', 0)}, "
+            f"uncovered={structural_meta.get('rows_without_context', 0)}), "
+            f"accuracy={structural_covered_eval.get('accuracy')}"
         )
 
     if labels is not None:
@@ -1293,8 +1417,8 @@ def run(args: argparse.Namespace) -> None:
         for category in ("true", "false", "unverified"):
             counts = meta_payload["per_category_prediction_counts"].get(category, {})
             print(
-                f"  {category}: true={counts.get('true', 0)}, false={counts.get('false', 0)}, "
-                f"unverifiable={counts.get('unverifiable', 0)}, ambiguous={counts.get('ambiguous', 0)}"
+                f"  {category}: t={counts.get('true', 0)}, f={counts.get('false', 0)}, "
+                f"u={counts.get('unverifiable', 0)}, a={counts.get('ambiguous', 0)}"
             )
     else:
         if args.hf_dataset:

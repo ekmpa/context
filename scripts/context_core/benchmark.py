@@ -1,6 +1,9 @@
 import json
 import math
+import os
 import time
+import threading
+import concurrent.futures
 
 import pandas as pd
 
@@ -20,6 +23,14 @@ def estimate_auto_checker_price(num_claims, checker_config_name, openai_cost=0.0
 
 def sumAllObj(obj):
     return sum(obj.values())
+
+
+def _env_int(name, default, minimum=1):
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        return max(minimum, int(raw))
+    except Exception:
+        return default
 
 
 def _extract_claim_counts(state):
@@ -83,8 +94,6 @@ def evaluate_free_text_with_auto_checker(
     dataset_name = llm_response_data[0]["source"]
     llm_response_data = pd.DataFrame(llm_response_data)
 
-    pipeline = Pipeline(args)
-
     hot_reload = {"global_config": {}}
     if getattr(args, "openai_apikey", None):
         hot_reload["global_config"]["openai_key"] = {
@@ -95,11 +104,27 @@ def evaluate_free_text_with_auto_checker(
         hot_reload["global_config"]["factcheck_gpt_model"] = args.factcheck_model
     if getattr(args, "rarr_model", None):
         hot_reload["global_config"]["rarr_model"] = args.rarr_model
-    if hot_reload["global_config"]:
-        pipeline.hot_reload_global_config(hot_reload)
 
-    entries = []
-    for i in range(len(llm_response_data["prompt"])):
+    def _build_pipeline():
+        pipeline = Pipeline(args)
+        if hot_reload["global_config"]:
+            pipeline.hot_reload_global_config(hot_reload)
+        return pipeline
+
+    worker_count = _env_int("RARR_SAMPLE_WORKERS", 1)
+    worker_count = min(worker_count, len(llm_response_data))
+
+    thread_local = threading.local()
+
+    def _get_thread_pipeline():
+        existing = getattr(thread_local, "pipeline", None)
+        if existing is None:
+            thread_local.pipeline = _build_pipeline()
+        return thread_local.pipeline
+
+    def _evaluate_index(i):
+        pipeline = _get_thread_pipeline()
+
         prompt = llm_response_data["prompt"][i]
         response = llm_response_data["response"][i]
         sample_name = response_column_name[:-9] + f"_{dataset_name}_{i}"
@@ -142,6 +167,17 @@ def evaluate_free_text_with_auto_checker(
         if error_message is not None:
             result["error"] = error_message
 
-        entries.append(result)
+        return result
+
+    indices = list(range(len(llm_response_data["prompt"])))
+    if worker_count <= 1 or len(indices) <= 1:
+        entries = [_evaluate_index(i) for i in indices]
+    else:
+        entries = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = [pool.submit(_evaluate_index, i) for i in indices]
+            for fut in concurrent.futures.as_completed(futures):
+                entries.append(fut.result())
+        entries.sort(key=lambda x: x.get("index", 0))
 
     return entries

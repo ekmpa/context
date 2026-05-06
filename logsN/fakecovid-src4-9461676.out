@@ -1,0 +1,77 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 4 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Another job is already refreshing shared assets. Waiting for /home/mila/k/kondrupe/context/data/.initialize_run_assets.lock ...
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=fakecovid
+Default dataset path: test=./data/fakecovid/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition source_attr
+Running: python ./scripts/run_rarr_eval.py ./data/fakecovid/test/data.jsonl --condition source_attr --max-rows  --rarr-model gpt-5-mini
+Run settings: condition=source_attr, backend=openai, max_rows=all, seed=4, num_rounds_qgen=3, max_evidences_per_question=5
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (185 total runs)
+Run finished: rarr-dataset-20260505-011820-946086
+Rows processed: 408 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011820-946086
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011820-946086/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260505-011820-946086/meta_eval.json
+Run summary:
+  rows scored: 408
+  avg evidence/row: 2.05
+  avg evidence/benchmark query: 2.05
+  avg evidence/row (with detail): 2.05
+  total evidence retrieved: 836
+  search timeouts: 199
+  serper->ddg fallbacks: 0
+  provider failures: 400
+  queries with no results: 207
+  accuracy: 0.4730392156862745
+  label audit: rows=408, raw_unique=33, fallback=7, normalized(true=13, false=231, unverified=164)
+  label audit fallback examples: Misattributed=2, News=2, Suspicions=1, HALF TRUTH=1, Partially false=1
+  true: t=4, f=1, u=7, a=1
+  false: t=7, f=89, u=127, a=8
+  unverified: t=18, f=43, u=100, a=3
+  sanity first-sample:
+    claim: People who got a flu shot are at a greater risk from COVID-19.
+    first query: People who got a flu shot are at a greater risk from COVID-19.
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: People who got a flu shot are at a greater risk from COVID-19.
+Search query: People who got a flu shot are at a greater risk from COVID-19.
+Evidence snippet: Those who always got the flu shot were 24.7% more likely to be vaccinated against COVID-19 than those who never did so. COVID-19 vaccination was 50% more common in respondents vaccinated against the flu in 2021-22 (90.8% of 944 vs 60.9% of 723; risk ratio [RR], 1.50). And flu vaccine uptake in 2021-22 was 230% higher among COVID-vaccinated participants (57.1% of 1,025 vs 17.3% of 341; RR, 3.30). COVID-19 vaccinees were much more likely to receive the flu vaccine in 2022 after not receiving it in 2020 (odds ratio [OR], 12.82).
+Source/domain context: Source attribution checklist for 'umn.edu':
+- Publisher/Context: who is behind this domain and what is the publication context?
+- Source Type: is this a primary source or a secondary source for this claim?
+- Conflict of Interest: any plausible stake or incentive that could bias framing?
+- Outlet Category: news, government, academic, adv...
+    retrieved answer snippet: Those who always got the flu shot were 24.7% more likely to be vaccinated against COVID-19 than those who never did so. COVID-19 vaccination was 50% more common in respondents vaccinated against the flu in 2021-22 (90.8% of 944 vs 60.9% of 723; risk ratio [RR], 1.50). And flu vaccine uptake in 2021-22 was 230% highe...
+    structural/score context: Source attribution checklist for 'umn.edu':
+- Publisher/Context: who is behind this domain and what is the publication context?
+- Source Type: is this a primary source or a secondary source for this claim?
+- Conflict of Interest: any plausible stake or incentive that could bia...
+    verifier answer: disagrees (decision=disagrees)
+    gold truth: unverified

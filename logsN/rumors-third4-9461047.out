@@ -1,0 +1,77 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 4 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=rumors
+Default dataset path: test=./data/rumors/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/rumors/test/data.jsonl --condition third-party
+Running: python ./scripts/run_rarr_eval.py ./data/rumors/test/data.jsonl --condition third-party --max-rows  --rarr-model gpt-5-mini --third-party-ratings-file ./data/domain_ratings.csv
+Run settings: condition=third-party, backend=openai, max_rows=all, seed=4, num_rounds_qgen=3, max_evidences_per_question=5
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (146 total runs)
+Run finished: rarr-dataset-20260504-232021-739804
+Rows processed: 205 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-232021-739804
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-232021-739804/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-232021-739804/meta_eval.json
+Run summary:
+  rows scored: 202
+  avg evidence/row: 4.09
+  avg evidence/benchmark query: 4.09
+  avg evidence/row (with detail): 4.09
+  total evidence retrieved: 827
+  search timeouts: 1
+  serper->ddg fallbacks: 1
+  provider failures: 0
+  queries with no results: 1
+  third-party evidence score coverage: 602/834 (72.2%)
+  third-party query coverage: 202/205 (98.5%)
+  third-party covered-only eval (this run's primary accuracy basis): rows=202 (covered=202, uncovered=3), accuracy=0.7029702970297029
+  accuracy: 0.7029702970297029
+  label audit: rows=205, raw_unique=12, fallback=2, normalized(true=29, false=136, unverified=40)
+  label audit fallback examples: MISATTRIBUTED=1, UNDETERMINED=1
+  true: t=21, f=4, u=0, a=3
+  false: t=7, f=118, u=1, a=8
+  unverified: t=12, f=21, u=3, a=4
+  sanity first-sample:
+    claim: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+    first query: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+Search query: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+Evidence snippet: The satirical publication got a two-decade head start on rubbing in the Donald's financial issues. Dan Evon Published June 28, 2017 Image courtesy of Wikimedia Commons Claim: A cartoon lampooning Donald Trump over his lack of business acumen was published in a 1992 issue of Mad Magazine. Rating: Some were skeptical that Mad had really lampooned Donald Trump as far back as the 1990s, but it's not really all that surprising.
+Source/domain context: Source note: 'snopes.com' has a trust score of 0.9035 (scores span [0,1], higher is better).
+
+If the source/domain context is temporal (history across months), consider historical patterns in the source assessment.
+
+Return exactly one label from:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: The satirical publication got a two-decade head start on rubbing in the Donald's financial issues. Dan Evon Published June 28, 2017 Image courtesy of Wikimedia Commons Claim: A cartoon lampooning Donald Trump over his lack of business acumen was published in a 1992 issue of Mad Magazine. Rating: Some were skeptical...
+    structural/score context: Source note: 'snopes.com' has a trust score of 0.9035 (scores span [0,1], higher is better).
+    verifier answer: agrees (decision=agrees)
+    gold truth: true

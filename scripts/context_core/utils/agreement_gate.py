@@ -12,14 +12,24 @@ DEFAULT_MAX_GATE_EVIDENCE_CHARS = 3500
 DEFAULT_MAX_GATE_STRUCTURAL_CHARS = 1000
 
 
-COMPACT_AGREEMENT_GATE_TEMPLATE = """You are a strict fact-checking verifier.
+COMPACT_AGREEMENT_GATE_TEMPLATE = """You are a strict fact-checking judge.
 
 Claim: {claim}
 Search query: {query}
 Evidence snippet: {evidence}
 Source/domain context: {structural_context}
 
+If the source/domain context is temporal (history across months), consider historical patterns in the source assessment.
+
 Return exactly one label from:
+agrees | disagrees | ambiguous | unverifiable
+""".strip()
+
+RAW_COMPACT_GATE_TEMPLATE = """Claim: {claim}
+Search query: {query}
+Evidence: {evidence}
+
+Return exactly one label:
 agrees | disagrees | ambiguous | unverifiable
 """.strip()
 
@@ -149,12 +159,19 @@ def run_agreement_gate(
     }
 
     if use_compact_prompt:
-        gpt3_input = COMPACT_AGREEMENT_GATE_TEMPLATE.format(
-            claim=claim,
-            query=query,
-            evidence=evidence,
-            structural_context=structural_context or "No source/domain context provided.",
-        ).strip()
+        if structural_context:
+            gpt3_input = COMPACT_AGREEMENT_GATE_TEMPLATE.format(
+                claim=claim,
+                query=query,
+                evidence=evidence,
+                structural_context=structural_context,
+            ).strip()
+        else:
+            gpt3_input = RAW_COMPACT_GATE_TEMPLATE.format(
+                claim=claim,
+                query=query,
+                evidence=evidence,
+            ).strip()
     elif context:
         gpt3_input = prompt.format(
             context=context,
@@ -172,14 +189,20 @@ def run_agreement_gate(
         ).strip()
 
     if use_compact_prompt:
-        # Chat-style call is more reliable for modern chat-first models.
+        system_role = (
+            "You are a fact-checking judge. Output exactly one label: agrees, disagrees, ambiguous, or unverifiable."
+            if not structural_context
+            else (
+                "You are a strict fact-checking judge. "
+                "Use source/domain context as a reliability prior. "
+                "When temporal history is present, weigh consistency across months and repeated peers as stronger evidence than one-off spikes. "
+                "Output exactly one token label: agrees, disagrees, ambiguous, or unverifiable."
+            )
+        )
         response_text = chat_text(
             [{"role": "user", "content": gpt3_input}],
             model=model,
-            system_role=(
-                "You are a strict fact-checking judge. "
-                "Output exactly one token label: agrees, disagrees, ambiguous, or unverifiable."
-            ),
+            system_role=system_role,
             temperature=0.0,
             num_retries=num_retries,
             waiting=2.0,
@@ -195,7 +218,6 @@ def run_agreement_gate(
             logit_bias={"50256": -100},
         )
 
-    # Some completion models emit leading newlines; avoid collapsing to an empty parse.
     if not (response_text or "").strip():
         fallback_input = (
             gpt3_input

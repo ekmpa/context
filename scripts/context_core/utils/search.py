@@ -1,6 +1,8 @@
 """Utils for searching a query and returning top passages from search results."""
+import atexit
 import concurrent.futures
 import csv
+import fcntl
 import itertools
 import json
 import logging
@@ -8,6 +10,8 @@ import os
 import random
 import subprocess
 import sys
+import threading
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 from pathlib import Path
 from urllib.parse import urlparse
@@ -37,11 +41,20 @@ STRUCTURAL_MONTH_ORDER = (
 STRUCTURAL_CACHE: Dict[str, str] = {}
 STRUCTURAL_CACHE_LOADED = False
 STRUCTURAL_CACHE_DIRTY = False
+STRUCTURAL_CACHE_PENDING_WRITES = 0
+STRUCTURAL_CACHE_UPDATES_OFFSET = 0
+STRUCTURAL_CACHE_LOCK = threading.Lock()
 SEARCH_STATS: Dict[str, int] = {
     "search_timeouts": 0,
     "serper_timeout_fallback_to_ddg": 0,
     "provider_failures": 0,
     "queries_with_no_results": 0,
+    "structural_queries_total": 0,
+    "structural_queries_with_context": 0,
+    "structural_evidence_total": 0,
+    "structural_evidence_with_context": 0,
+    "structural_cache_hits": 0,
+    "structural_cache_misses": 0,
 }
 THIRD_PARTY_RATINGS: Dict[str, Dict[str, float]] = {}
 THIRD_PARTY_RATINGS_LOADED = False
@@ -94,15 +107,31 @@ def _is_missing_text(value: Any) -> bool:
     return text in {"", "na", "none", "null", "nan", "n/a"}
 
 
+def _registrable_domain(host: str) -> str:
+    host = (host or "").strip().lower().strip(".")
+    if not host:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return host
+
+    second_level_cc = {"co", "com", "org", "net", "gov", "edu", "ac"}
+    cc_tlds = {"uk", "au", "jp", "nz", "za"}
+    if len(parts) >= 3 and parts[-1] in cc_tlds and parts[-2] in second_level_cc:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
 def _extract_domain(url: str) -> str:
     parsed = urlparse(url)
     host = (parsed.netloc or "").split(":")[0].strip().lower()
     if not host:
         # Allow plain domains without scheme, e.g. "reuters.com".
         host = (parsed.path or "").split("/")[0].split(":")[0].strip().lower()
-    if host.startswith("www."):
-        host = host[4:]
-    return host
+    return _registrable_domain(host)
 
 
 def _third_party_ratings_path() -> str:
@@ -194,53 +223,67 @@ def _lookup_third_party_context(domain: str) -> str:
 
 def _format_structural_context(domain: str, payload: Any) -> str:
     max_neighbors = int(os.getenv("RARR_STRUCTURAL_MAX_NEIGHBORS", "8"))
+    months_back = max(1, int(os.getenv("RARR_STRUCTURAL_MONTHS_BACK", "3")))
 
     if isinstance(payload, list):
         neighbors = [x for x in payload if isinstance(x, str)][:max_neighbors]
         if not neighbors:
             return f"Source context for {domain}: no co-linking neighbors found in graph index."
         return (
-            f"Source context for {domain}: "
-            f"frequently co-links with {', '.join(neighbors)}. "
-            f"Consider what this peer group implies about the outlet's credibility and editorial stance."
+            f"Source context for {domain}: mode=latest, peers={len(neighbors)}, "
+            f"top_peers={', '.join(neighbors)}. Treat as a weak prior unless corroborated by evidence text."
         )
 
     if not isinstance(payload, dict):
         return f"Source context for {domain}: graph data format not recognized."
 
-    month_counts = [
-        f"{month}:{len(payload.get(month, []))}"
-        for month in STRUCTURAL_MONTH_ORDER
-        if payload.get(month)
+    available_months = [
+        month for month in STRUCTURAL_MONTH_ORDER
+        if isinstance(payload.get(month), list) and payload.get(month)
     ]
-
-    most_recent_neighbors = []
-    most_recent_month = None
-    for month in STRUCTURAL_MONTH_ORDER:
-        if payload.get(month):
-            most_recent_month = month
-            most_recent_neighbors = payload.get(month, [])[:max_neighbors]
-            break
-
-    if not month_counts and not most_recent_neighbors:
+    selected_months = available_months[:months_back]
+    if not selected_months:
         return f"Source context for {domain}: no neighbor data found in graph index."
 
-    neighbor_str = ", ".join(most_recent_neighbors) if most_recent_neighbors else "none recorded"
-    activity = f"active across {len(month_counts)} month(s)" if month_counts else "limited activity"
+    month_sizes = {month: len(payload.get(month, [])) for month in selected_months}
+    peer_counter: Counter[str] = Counter()
+    for month in selected_months:
+        month_neighbors = [x for x in payload.get(month, []) if isinstance(x, str)]
+        peer_counter.update(month_neighbors)
+
+    unique_peers = len(peer_counter)
+    peer_mentions = sum(peer_counter.values())
+    repeated_peers = sum(1 for _, count in peer_counter.items() if count >= 2)
+    top_peers = sorted(peer_counter.items(), key=lambda item: (-item[1], item[0]))[:max_neighbors]
+    top_peer_text = ", ".join(f"{peer}({count})" for peer, count in top_peers) if top_peers else "none"
+    month_size_text = ", ".join(f"{month}:{month_sizes[month]}" for month in selected_months)
+
     return (
-        f"Source context for {domain} ({activity}): "
-        f"recent co-linking peers include {neighbor_str}. "
-        f"Consider what this peer group implies about the outlet's credibility and editorial stance."
+        f"Source context for {domain}: mode=temporal, months_considered={len(selected_months)}, "
+        f"month_neighbor_counts=[{month_size_text}], unique_peers={unique_peers}, "
+        f"peer_mentions={peer_mentions}, repeated_peers={repeated_peers}, "
+        f"top_peers={top_peer_text}. Higher repeated_peers and cross-month consistency indicate stronger structural prior."
     )
 
 
-def _lookup_structural_context(domain: str, timeout: float = 6.0) -> str:
+def _lookup_structural_context(domain: str, timeout: float | None = None) -> str:
+    global STRUCTURAL_CACHE_DIRTY, STRUCTURAL_CACHE_PENDING_WRITES
     if not domain:
         return ""
 
+    def _cache_key_for(domain_name: str) -> str:
+        return "|".join(
+            [
+                domain_name,
+                f"mode={hook_mode}",
+                f"hops={os.getenv('RARR_STRUCTURAL_HOPS', '2').strip()}",
+                f"max_domains_per_hop={os.getenv('RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP', '10').strip()}",
+                f"months_back={os.getenv('RARR_STRUCTURAL_MONTHS_BACK', '3').strip()}",
+                f"max_neighbors={os.getenv('RARR_STRUCTURAL_MAX_NEIGHBORS', '8').strip()}",
+            ]
+        )
+
     _load_structural_cache_file()
-    if domain in STRUCTURAL_CACHE:
-        return STRUCTURAL_CACHE[domain]
 
     hook_path = os.getenv("RARR_STRUCTURAL_HOOK_PATH", "").strip()
     if not hook_path:
@@ -248,18 +291,55 @@ def _lookup_structural_context(domain: str, timeout: float = 6.0) -> str:
     if not os.path.isfile(hook_path):
         return ""
 
-    try:
+    hook_mode = os.getenv("RARR_STRUCTURAL_HOOK_MODE", "temporal").strip().lower()
+    if hook_mode not in {"latest", "temporal"}:
+        hook_mode = "temporal"
+
+    cache_key = _cache_key_for(domain)
+    _refresh_structural_cache_updates()
+    with STRUCTURAL_CACHE_LOCK:
+        if cache_key in STRUCTURAL_CACHE:
+            _record_search_stat("structural_cache_hits")
+            return STRUCTURAL_CACHE[cache_key]
+        # Backward compatibility for older cache files keyed only by domain.
+        if domain in STRUCTURAL_CACHE:
+            _record_search_stat("structural_cache_hits")
+            cached = STRUCTURAL_CACHE[domain]
+            STRUCTURAL_CACHE[cache_key] = cached
+            STRUCTURAL_CACHE_DIRTY = True
+            STRUCTURAL_CACHE_PENDING_WRITES += 1
+            return cached
+    _record_search_stat("structural_cache_misses")
+
+    hook_timeout = timeout
+    if hook_timeout is None:
+        try:
+            hook_timeout = float(os.getenv("RARR_STRUCTURAL_HOOK_TIMEOUT", "20"))
+        except Exception:
+            hook_timeout = 20.0
+
+    def _run_hook(mode: str, timeout_s: float) -> Any:
         cmd = [
             sys.executable,
             hook_path,
             domain,
             "--mode",
-            "latest",
+            mode,
             "--hops",
             os.getenv("RARR_STRUCTURAL_HOPS", "2"),
             "--max-domains-per-hop",
             os.getenv("RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP", "10"),
         ]
+
+        if mode == "temporal":
+            cmd.extend(
+                [
+                    "--temporal-months-back",
+                    os.getenv("RARR_STRUCTURAL_MONTHS_BACK", "3"),
+                    "--max-neighbors-per-month",
+                    os.getenv("RARR_STRUCTURAL_MAX_NEIGHBORS", "8"),
+                ]
+            )
 
         shards_dir = os.getenv("RARR_STRUCTURAL_SHARDS_DIR", "").strip()
         if shards_dir:
@@ -269,25 +349,79 @@ def _lookup_structural_context(domain: str, timeout: float = 6.0) -> str:
             cmd,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=timeout,
+            timeout=timeout_s,
         )
-        payload = json.loads(raw)
-        summary = _format_structural_context(domain, payload)
-        STRUCTURAL_CACHE[domain] = summary
-        _persist_structural_cache_file()
-        return summary
+
+        return json.loads(raw)
+
+    try:
+        payload = _run_hook(hook_mode, hook_timeout)
     except Exception:
-        STRUCTURAL_CACHE[domain] = ""
-        _persist_structural_cache_file()
-        return ""
+        payload = None
+
+    if payload is None and hook_mode == "latest":
+        fallback_timeout = hook_timeout
+        try:
+            fallback_timeout = float(
+                os.getenv("RARR_STRUCTURAL_HOOK_FALLBACK_TIMEOUT", "30")
+            )
+        except Exception:
+            fallback_timeout = hook_timeout
+        try:
+            payload = _run_hook("temporal", fallback_timeout)
+        except Exception:
+            payload = None
+
+    if payload is not None:
+        summary = _format_structural_context(domain, payload)
+        with STRUCTURAL_CACHE_LOCK:
+            STRUCTURAL_CACHE[cache_key] = summary
+            STRUCTURAL_CACHE_DIRTY = True
+            STRUCTURAL_CACHE_PENDING_WRITES += 1
+        _append_structural_cache_update(cache_key, summary)
+        return summary
+
+    return ""
 
 
 def _get_structural_cache_file() -> str:
-    return os.getenv("RARR_STRUCTURAL_CACHE_FILE", "").strip()
+    configured = os.getenv("RARR_STRUCTURAL_CACHE_FILE", "").strip()
+    if configured:
+        return configured
+    return str(Path(__file__).resolve().parents[3] / "data" / "structural_neighbors_cache.json")
+
+
+def _get_structural_cache_updates_file() -> str:
+    cache_file = _get_structural_cache_file()
+    return f"{cache_file}.updates.jsonl" if cache_file else ""
+
+
+def _get_structural_cache_lock_file() -> str:
+    cache_file = _get_structural_cache_file()
+    return f"{cache_file}.lock" if cache_file else ""
+
+
+def _acquire_structural_cache_file_lock():
+    lock_file = _get_structural_cache_lock_file()
+    if not lock_file:
+        return None
+    os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+    handle = open(lock_file, "a+", encoding="utf-8")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def _release_structural_cache_file_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _load_structural_cache_file() -> None:
-    global STRUCTURAL_CACHE_LOADED
+    global STRUCTURAL_CACHE_LOADED, STRUCTURAL_CACHE_UPDATES_OFFSET
     if STRUCTURAL_CACHE_LOADED:
         return
     STRUCTURAL_CACHE_LOADED = True
@@ -306,20 +440,205 @@ def _load_structural_cache_file() -> None:
     except Exception:
         return
 
+    _refresh_structural_cache_updates(force=True)
+    updates_file = _get_structural_cache_updates_file()
+    if updates_file and os.path.isfile(updates_file):
+        try:
+            STRUCTURAL_CACHE_UPDATES_OFFSET = os.path.getsize(updates_file)
+        except Exception:
+            STRUCTURAL_CACHE_UPDATES_OFFSET = 0
 
-def _persist_structural_cache_file() -> None:
-    global STRUCTURAL_CACHE_DIRTY
-    cache_file = _get_structural_cache_file()
-    if not cache_file:
+
+def _refresh_structural_cache_updates(force: bool = False) -> None:
+    global STRUCTURAL_CACHE_UPDATES_OFFSET
+    updates_file = _get_structural_cache_updates_file()
+    if not updates_file or not os.path.isfile(updates_file):
         return
 
     try:
+        file_size = os.path.getsize(updates_file)
+    except Exception:
+        return
+
+    start_offset = STRUCTURAL_CACHE_UPDATES_OFFSET
+    if force or file_size < start_offset:
+        start_offset = 0
+    if not force and file_size == start_offset:
+        return
+
+    loaded_entries: list[tuple[str, str]] = []
+    try:
+        with open(updates_file, "r", encoding="utf-8") as handle:
+            handle.seek(start_offset)
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                key = payload.get("key")
+                value = payload.get("value")
+                if isinstance(key, str) and isinstance(value, str):
+                    loaded_entries.append((key, value))
+            end_offset = handle.tell()
+    except Exception:
+        return
+
+    with STRUCTURAL_CACHE_LOCK:
+        for key, value in loaded_entries:
+            STRUCTURAL_CACHE[key] = value
+        STRUCTURAL_CACHE_UPDATES_OFFSET = end_offset
+
+
+def _append_structural_cache_update(cache_key: str, summary: str) -> None:
+    updates_file = _get_structural_cache_updates_file()
+    if not updates_file:
+        return
+
+    lock_handle = _acquire_structural_cache_file_lock()
+    try:
+        os.makedirs(os.path.dirname(updates_file), exist_ok=True)
+        with open(updates_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps({"key": cache_key, "value": summary}, ensure_ascii=True, sort_keys=True)
+            )
+            handle.write("\n")
+    except Exception:
+        return
+    finally:
+        _release_structural_cache_file_lock(lock_handle)
+
+
+def _persist_structural_cache_file(force: bool = False) -> None:
+    global STRUCTURAL_CACHE_DIRTY, STRUCTURAL_CACHE_PENDING_WRITES, STRUCTURAL_CACHE_UPDATES_OFFSET
+    cache_file = _get_structural_cache_file()
+    updates_file = _get_structural_cache_updates_file()
+    if not cache_file:
+        return
+
+    if not STRUCTURAL_CACHE_DIRTY:
+        return
+
+    autosave_enabled = os.getenv("RARR_STRUCTURAL_CACHE_AUTOSAVE", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    flush_every = max(1, int(os.getenv("RARR_STRUCTURAL_CACHE_FLUSH_EVERY", "25")))
+    if not force:
+        if not autosave_enabled:
+            return
+        if STRUCTURAL_CACHE_PENDING_WRITES < flush_every:
+            return
+
+    try:
+        lock_handle = _acquire_structural_cache_file_lock()
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-        with open(cache_file, "w", encoding="utf-8") as handle:
-            json.dump(STRUCTURAL_CACHE, handle, ensure_ascii=True, sort_keys=True)
+        payload: Dict[str, str] = {}
+        if os.path.isfile(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as handle:
+                    existing_payload = json.load(handle)
+                if isinstance(existing_payload, dict):
+                    payload.update(
+                        {
+                            str(key): str(value)
+                            for key, value in existing_payload.items()
+                            if isinstance(key, str) and isinstance(value, str)
+                        }
+                    )
+            except Exception:
+                pass
+        if updates_file and os.path.isfile(updates_file):
+            try:
+                with open(updates_file, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            update_payload = json.loads(line)
+                        except Exception:
+                            continue
+                        key = update_payload.get("key")
+                        value = update_payload.get("value")
+                        if isinstance(key, str) and isinstance(value, str):
+                            payload[key] = value
+            except Exception:
+                pass
+        with STRUCTURAL_CACHE_LOCK:
+            payload.update(dict(STRUCTURAL_CACHE))
+        tmp_cache_file = f"{cache_file}.tmp"
+        with open(tmp_cache_file, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, sort_keys=True, indent=2)
+            handle.write("\n")
+        os.replace(tmp_cache_file, cache_file)
+        if updates_file and os.path.exists(updates_file):
+            with open(updates_file, "w", encoding="utf-8"):
+                pass
+        with STRUCTURAL_CACHE_LOCK:
+            STRUCTURAL_CACHE.clear()
+            STRUCTURAL_CACHE.update(payload)
         STRUCTURAL_CACHE_DIRTY = False
+        STRUCTURAL_CACHE_PENDING_WRITES = 0
+        STRUCTURAL_CACHE_UPDATES_OFFSET = 0
     except Exception:
         STRUCTURAL_CACHE_DIRTY = True
+    finally:
+        try:
+            _release_structural_cache_file_lock(lock_handle)
+        except Exception:
+            pass
+
+
+def _flush_structural_cache_on_exit() -> None:
+    try:
+        _persist_structural_cache_file(force=True)
+    except Exception:
+        return
+
+
+atexit.register(_flush_structural_cache_on_exit)
+
+
+def _prefetch_structural_contexts(domains: List[str]) -> Dict[str, str]:
+    unique_domains: List[str] = []
+    seen: set[str] = set()
+    for domain in domains:
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        unique_domains.append(domain)
+
+    if not unique_domains:
+        return {}
+
+    raw_workers = os.getenv("RARR_STRUCTURAL_LOOKUP_WORKERS", "4").strip()
+    try:
+        workers = max(1, min(int(raw_workers), len(unique_domains)))
+    except Exception:
+        workers = min(4, len(unique_domains))
+
+    if workers <= 1 or len(unique_domains) <= 1:
+        contexts = {domain: _lookup_structural_context(domain) for domain in unique_domains}
+        return contexts
+
+    contexts: Dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_domain = {
+            pool.submit(_lookup_structural_context, domain): domain for domain in unique_domains
+        }
+        for future in concurrent.futures.as_completed(future_to_domain):
+            domain = future_to_domain[future]
+            try:
+                contexts[domain] = future.result()
+            except Exception:
+                contexts[domain] = ""
+
+    return contexts
 
 
 def chunk_text(
@@ -556,6 +875,10 @@ def run_search(
     Returns:
         retrieved_passages: Top retrieved passages for the search query.
     """
+    mode = _condition_mode()
+    if mode == "structural":
+        _record_search_stat("structural_queries_total")
+
     if _is_missing_text(query):
         _record_search_stat("queries_with_no_results")
         return []
@@ -582,14 +905,21 @@ def run_search(
     # Remove URLs if we weren't able to scrape anything or if they are a PDF.
     scraped_results = [r for r in scraped_results if r[0] and ".pdf" not in r[1]]
 
+    selected_results = scraped_results[:max_search_results_per_query]
+    structural_contexts_by_domain: Dict[str, str] = {}
+    if mode == "structural":
+        structural_contexts_by_domain = _prefetch_structural_contexts(
+            [_extract_domain(url) for _, url in selected_results]
+        )
+
     # Iterate through the scraped results and extract out the most useful passages.
     retrieved_passages = []
-    mode = _condition_mode()
-    for webtext, url in scraped_results[:max_search_results_per_query]:
+    saw_structural_context = False
+    for webtext, url in selected_results:
         structural_context = ""
         domain = _extract_domain(url)
         if mode == "structural":
-            structural_context = _lookup_structural_context(domain, timeout=timeout)
+            structural_context = structural_contexts_by_domain.get(domain, "")
         elif mode == "third-party":
             structural_context = _lookup_third_party_context(domain)
             _record_search_stat("third_party_evidence_total")
@@ -631,6 +961,14 @@ def run_search(
                     "retrieval_score": score,  # Cross-encoder score as retr score
                 }
             )
+            if mode == "structural":
+                _record_search_stat("structural_evidence_total")
+                if structural_context:
+                    _record_search_stat("structural_evidence_with_context")
+                    saw_structural_context = True
+
+    if mode == "structural" and saw_structural_context:
+        _record_search_stat("structural_queries_with_context")
 
     if retrieved_passages:
         # Sort all retrieved passages by the retrieval score.

@@ -1,0 +1,76 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 4 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=benjamin-political-news
+Default dataset path: test=./data/benjamin-political-news/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/benjamin-political-news/test/data.jsonl --condition third-party
+Running: python ./scripts/run_rarr_eval.py ./data/benjamin-political-news/test/data.jsonl --condition third-party --max-rows  --rarr-model gpt-5-mini --third-party-ratings-file ./data/domain_ratings.csv
+Run settings: condition=third-party, backend=openai, max_rows=all, seed=4, num_rounds_qgen=3, max_evidences_per_question=5
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (60 total runs)
+Run finished: rarr-dataset-20260504-203018-583895
+Rows processed: 68 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-203018-583895
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-203018-583895/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-203018-583895/meta_eval.json
+Run summary:
+  rows scored: 66
+  avg evidence/row: 4.27
+  avg evidence/benchmark query: 4.27
+  avg evidence/row (with detail): 4.27
+  total evidence retrieved: 282
+  search timeouts: 0
+  serper->ddg fallbacks: 0
+  provider failures: 0
+  queries with no results: 0
+  third-party evidence score coverage: 218/291 (74.9%)
+  third-party query coverage: 66/68 (97.1%)
+  third-party covered-only eval (this run's primary accuracy basis): rows=66 (covered=66, uncovered=2), accuracy=0.6515151515151515
+  accuracy: 0.6515151515151515
+  label audit: rows=68, raw_unique=4, fallback=0, normalized(true=27, false=26, unverified=15)
+  true: t=20, f=2, u=2, a=3
+  false: t=3, f=20, u=2, a=1
+  unverified: t=0, f=10, u=3, a=0
+  sanity first-sample:
+    claim: trump using brown paper bag test at rally's no dark skin blacks allowed
+    first query: trump using brown paper bag test at rally's no dark skin blacks allowed
+    final verifier prompt: You are a strict fact-checking judge.
+
+Claim: trump using brown paper bag test at rally's no dark skin blacks allowed
+Search query: trump using brown paper bag test at rally's no dark skin blacks allowed
+Evidence snippet: The brown paper bag test was a form of discrimination used to exclude dark-skinned Black people by comparing their skin tone to the color of a brown paper bag. Those who were lighter than the bag were allowed into the club. Those whose skin failed the test were rejected. There are stories of Black fraternities and sororities, professional organizations, and even churches using the test to determine membership.
+Source/domain context: Source note: 'wordpress.com' has a trust score of 0.1325 (scores span [0,1], higher is better).
+
+If the source/domain context is temporal (history across months), consider historical patterns in the source assessment.
+
+Return exactly one label from:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: The brown paper bag test was a form of discrimination used to exclude dark-skinned Black people by comparing their skin tone to the color of a brown paper bag. Those who were lighter than the bag were allowed into the club. Those whose skin failed the test were rejected. There are stories of Black fraternities and s...
+    structural/score context: Source note: 'wordpress.com' has a trust score of 0.1325 (scores span [0,1], higher is better).
+    verifier answer: unverifiable (decision=unverifiable)
+    gold truth: false

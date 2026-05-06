@@ -1,0 +1,70 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 4 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=isot-fake-news
+Default dataset path: test=./data/isot-fake-news/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/isot-fake-news/test/data.jsonl --condition third-party
+Running: python ./scripts/run_rarr_eval.py ./data/isot-fake-news/test/data.jsonl --condition third-party --max-rows  --rarr-model gpt-5-mini --third-party-ratings-file ./data/domain_ratings.csv
+Run settings: condition=third-party, backend=openai, max_rows=all, seed=4, num_rounds_qgen=3, max_evidences_per_question=5
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (154 total runs)
+Run finished: rarr-dataset-20260504-231320-483058
+Rows processed: 400 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-483058
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-483058/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-231320-483058/meta_eval.json
+Run summary:
+  rows scored: 352
+  avg evidence/row: 3.95
+  avg evidence/benchmark query: 3.95
+  avg evidence/row (with detail): 3.95
+  total evidence retrieved: 1390
+  search timeouts: 0
+  serper->ddg fallbacks: 0
+  provider failures: 0
+  queries with no results: 3
+  third-party evidence score coverage: 1059/1463 (72.4%)
+  third-party query coverage: 352/400 (88.0%)
+  third-party covered-only eval (this run's primary accuracy basis): rows=352 (covered=352, uncovered=48), accuracy=0.5482954545454546
+  accuracy: 0.5482954545454546
+  label audit: rows=400, raw_unique=3, fallback=0, normalized(true=200, false=200, unverified=0)
+  true: t=143, f=13, u=7, a=27
+  false: t=46, f=50, u=39, a=27
+  unverified: t=0, f=0, u=0, a=0
+  sanity first-sample:
+    claim: hariri indicates possibility of revoking his resignation
+    first query: hariri indicates possibility of revoking his resignation
+    final verifier prompt: Claim: hariri indicates possibility of revoking his resignation
+Search query: hariri indicates possibility of revoking his resignation
+Evidence: Lebanese PM Hariri indicates possibility of revoking his resignation Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his... Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his political party, Hariri said he planned to return to Lebanon to confirm his resignation in accordance with the constitution.
+
+Return exactly one label:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: Lebanese PM Hariri indicates possibility of revoking his resignation Saad al-Hariri, who announced on November 4 from Saudi Arabia that he was quitting as Lebanon's prime minister, suggested today he could rescind his resignation. Speaking from Riyadh in an interview with Future TV, a station affiliated with his......
+    verifier answer: agrees (decision=agrees)
+    gold truth: true

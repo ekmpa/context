@@ -1,0 +1,53 @@
+[init] python ./scripts/initialize_run_assets.py --hf-dataset ComplexDataLab/Misinfo_Datasets --hf-config default --origin-col dataset --label-col label --seed 4 --data-dir ./data --metadata-path ./data/metadata.json --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards --min-samples-per-split 20 --max-samples-per-label 1000
+[init] Using existing split metadata at data/metadata.json
+[init] Serving shards already exist at /network/scratch/k/kondrupe/credibench-neighbors_serving_shards/_meta.json
+Default dataset selector: DATASET=rumors
+Default dataset path: test=./data/rumors/test/data.jsonl
+[test] python ./scripts/run_rarr_eval.py ./data/rumors/test/data.jsonl --condition structural
+Running: python ./scripts/run_rarr_eval.py ./data/rumors/test/data.jsonl --condition structural --max-rows  --rarr-model gpt-5-mini --structural --structural-shards-dir /network/scratch/k/kondrupe/credibench-neighbors_serving_shards
+Structural mode is on (shards: /network/scratch/k/kondrupe/credibench-neighbors_serving_shards)
+Run settings: condition=structural, backend=openai, max_rows=all, seed=4, num_rounds_qgen=3, max_evidences_per_question=5
+Structural settings: hops=2, hook_mode=latest, months_back=3, hook_timeout_s=40
+/home/mila/k/kondrupe/context/scripts/context_core/solvers context_core.solvers
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_rtv.py context_core.solvers
+Importing context_core.solvers.rarr_rtv
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/factcheck_gpt_cp.py context_core.solvers
+Importing context_core.solvers.factcheck_gpt_cp
+/home/mila/k/kondrupe/context/scripts/context_core/solvers/rarr_vfr.py context_core.solvers
+Importing context_core.solvers.rarr_vfr
+Performance log Appended: /home/mila/k/kondrupe/context/eval_results/performance_log.json  (176 total runs)
+Run finished: rarr-dataset-20260504-183912-999309
+Rows processed: 205 | Output folder: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-183912-999309
+Model log: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-183912-999309/factcheck-unknown-rarr-gpt-5-mini.json | Summary report: /home/mila/k/kondrupe/context/eval_results/custom/rarr-dataset-20260504-183912-999309/meta_eval.json
+Run summary:
+  rows scored: 0
+  avg evidence/row: 0.00
+  avg evidence/benchmark query: 0.00
+  avg evidence/row (with detail): 0.00
+  total evidence retrieved: 0
+  search timeouts: 9
+  serper->ddg fallbacks: 0
+  provider failures: 18
+  queries with no results: 9
+  structural hops: 2 | seed: 4
+  structural context coverage (queries): 0/205 (0.0%)
+  structural context coverage (evidence): 0/832 (0.0%)
+  structural covered-only eval (this run's primary accuracy basis): rows=0 (covered=0, uncovered=205), accuracy=None
+  accuracy: None
+  label audit: rows=205, raw_unique=12, fallback=2, normalized(true=29, false=136, unverified=40)
+  label audit fallback examples: MISATTRIBUTED=1, UNDETERMINED=1
+  true: t=0, f=0, u=0, a=0
+  false: t=0, f=0, u=0, a=0
+  unverified: t=0, f=0, u=0, a=0
+  sanity first-sample:
+    claim: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+    first query: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+    final verifier prompt: Claim: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+Search query: A cartoon about Donald Trump was published in a 1992 issue of Mad Magazine.
+Evidence: The satirical publication got a two-decade head start on rubbing in the Donald's financial issues. Dan Evon Published June 28, 2017 Image courtesy of Wikimedia Commons Claim: A cartoon lampooning Donald Trump over his lack of business acumen was published in a 1992 issue of Mad Magazine. Rating: Some were skeptical that Mad had really lampooned Donald Trump as far back as the 1990s, but it's not really all that surprising.
+
+Return exactly one label:
+agrees | disagrees | ambiguous | unverifiable
+    retrieved answer snippet: The satirical publication got a two-decade head start on rubbing in the Donald's financial issues. Dan Evon Published June 28, 2017 Image courtesy of Wikimedia Commons Claim: A cartoon lampooning Donald Trump over his lack of business acumen was published in a 1992 issue of Mad Magazine. Rating: Some were skeptical...
+    verifier answer: agrees (decision=agrees)
+    gold truth: true
