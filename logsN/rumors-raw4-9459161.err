@@ -1,56 +1,0 @@
-[=== Module python/3.10 loaded ===]
-Loading weights:   0%|          | 0/105 [00:00<?, ?it/s]Loading weights: 100%|██████████| 105/105 [00:00<00:00, 8245.22it/s]
-  0%|          | 0/2 [00:00<?, ?it/s]
-  0%|          | 0/2 [00:00<?, ?it/s][A
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A
-
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A[A
-
-
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A[A[A
-
-
-
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A[A[A[A
-
-
-
-
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A[A[A[A[A
-
-
-
- 50%|█████     | 1/2 [00:15<00:15, 15.50s/it][A[A[A[A
-
-
-
-100%|██████████| 2/2 [00:25<00:00, 12.22s/it][A[A[A[A100%|██████████| 2/2 [00:25<00:00, 12.74s/it]
-
-
-
-
-  0%|          | 0/2 [00:00<?, ?it/s][A[A[A[A
-
-
-
-
-
- 50%|█████     | 1/2 [00:55<00:55, 55.37s/it][A[A[A[A[A[A
-
-
-
-
- 50%|█████     | 1/2 [00:56<00:56, 56.86s/it][A[A[A[A[A/var/spool/slurmd/job9459161/slurm_script: line 150: 505949 Killed                  python "${ROOT_DIR}/scripts/run_rarr_eval.py" "${RUN_ARGS[@]}"
-[2026-05-04T19:37:48.247] error: Detected 1 oom_kill event in StepId=9459161.batch. Some of the step tasks have been OOM Killed.
