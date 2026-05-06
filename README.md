@@ -2,7 +2,7 @@
 
 Automated fact-checking pipeline with different conditions:
 - Raw fact-checking, following the RARR pipeline from [OpenFactCheck](https://openfactcheck.com)
-- With third-party reliability signals, from [DQR]
+- With third-party reliability signals, from [DQR](https://academic.oup.com/pnasnexus/article/2/9/pgad286/7258994?guestAccessKey=)
 - With 1- or 2-hop structural information, from [CrediBench](https://huggingface.co/datasets/credi-net/CrediBench) 
 
 On: 
@@ -34,7 +34,7 @@ The default scores used are from [DQR] and can be found under the `data` folder.
 
 ### With structural information 
 
-The structural information retrieved displays the domain's 1- and 2-hop neighbors from [CrediBench] using the hook in `scripts/hook.py`. The first run may take longer because shards must be available.
+The structural information retrieved displays the domain's 1- and 2-hop neighbors from [CrediBench](https://huggingface.co/datasets/credi-net/CrediBench)  using the hook in `scripts/hook.py`. The first run may take longer because shards must be available.
 
 ```bash
 cd context
