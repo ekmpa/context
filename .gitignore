@@ -1,7 +1,15 @@
+#annonymized
+tests/
+analyze.sh
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
+
 
 # C extensions
 *.so
