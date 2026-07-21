@@ -9,16 +9,15 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
+
+from model_utils import infer_backend_from_model, MODEL_BACKEND_PREFIX_MAP
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 LOCAL_CORE_DIR = SCRIPTS_DIR / "context_core"
 DEFAULT_STRUCTURAL_SHARDS_DIR = "$SCRATCH/credibench-neighbors_serving_shards"
 DATA_STATS_DIR = ROOT_DIR / "data_stats"
-MODEL_BACKEND_PREFIX_MAP: dict[str, tuple[str, ...]] = {
-    "hf-local": ("qwen", "llama"),
-    "openai": ("gpt", "o1", "o3", "o4", "text-"),
-}
 CLAIM_COUNTER_KEYS = (
     "numFalseClaims",
     "numMixedClaims",
@@ -106,6 +105,15 @@ COMPACT_LABEL_MAP = {
 }
 
 
+def _autoload_env_file() -> None:
+    env_path = ROOT_DIR / ".env"
+    if env_path.is_file():
+        load_dotenv(dotenv_path=str(env_path), override=True)
+
+
+_autoload_env_file()
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -177,7 +185,6 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("RARR_CONDITION", "raw"),
         help="Run mode: raw (web only), structural (web + graph context), or third-party (web + domain ratings)",
     )
-    parser.add_argument("--structural", action="store_true", help="Enable structural graph context")
     parser.add_argument(
         "--structural-shards-dir",
         default=os.getenv("RARR_STRUCTURAL_SHARDS_DIR", DEFAULT_STRUCTURAL_SHARDS_DIR),
@@ -194,7 +201,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-config", default="default", help="Hugging Face dataset config")
     parser.add_argument("--hf-split", default="train", help="Hugging Face split")
     parser.add_argument("--hf-claim-col", default="claim", help="Claim column for Hugging Face runs")
-    parser.add_argument("--hf-label-col", default="label", help="Label column for Hugging Face runs")
+    parser.add_argument("--hf-label-col", default="narrative", help="Label column for Hugging Face runs")
+    parser.add_argument(
+        "--hf-claim-id-col",
+        default="claim_id",
+        help="Claim-ID column used for claim-level label aggregation",
+    )
+    parser.add_argument(
+        "--hf-label-aggregation",
+        choices=["auto", "row", "claim-majority", "climatecheck-narrative"],
+        default="auto",
+        help="How to derive gold labels for HF runs: row-level labels or majority-vote by claim id",
+    )
     parser.add_argument(
         "--hf-origin-col",
         default="dataset",
@@ -251,9 +269,12 @@ def _validate_runtime(args: argparse.Namespace) -> None:
             f"Unsupported CONTEXT_LLM_BACKEND={backend}. Use 'openai' or 'hf-local'."
         )
 
-    provider = os.getenv("RARR_SEARCH_PROVIDER", "serper").strip().lower()
+    provider = os.getenv("RARR_SEARCH_PROVIDER", "auto").strip().lower()
     if provider == "serper" and not os.getenv("SERPER_API_KEY"):
-        raise RuntimeError("Set SERPER_API_KEY to use the Serper search provider")
+        raise RuntimeError(
+            "SERPER_API_KEY is missing; DuckDuckGo fallback is disabled. Set SERPER_API_KEY "
+            "or choose a different search strategy explicitly."
+        )
     if provider not in {"auto", "serper", "duckduckgo"}:
         raise RuntimeError(
             f"Unsupported RARR_SEARCH_PROVIDER={provider}. Use 'auto', 'serper', or 'duckduckgo'."
@@ -285,11 +306,7 @@ def _validate_runtime(args: argparse.Namespace) -> None:
 
 
 def _infer_backend_from_model(model_name: str) -> str:
-    lower_name = (model_name or "").strip().lower()
-    for backend, prefixes in MODEL_BACKEND_PREFIX_MAP.items():
-        if any(lower_name.startswith(prefix) for prefix in prefixes):
-            return backend
-    return "openai"
+    return infer_backend_from_model(model_name)
 
 
 def _configure_backend_environment(args: argparse.Namespace) -> str:
@@ -305,11 +322,7 @@ def _configure_backend_environment(args: argparse.Namespace) -> str:
 
 
 def _resolve_condition(args: argparse.Namespace) -> str:
-    # Backward compatibility: --structural forces structural mode.
-    if getattr(args, "structural", False):
-        return "structural"
-    condition = getattr(args, "condition", "raw")
-    return condition
+    return getattr(args, "condition", "raw")
 
 
 def _configure_condition_environment(args: argparse.Namespace) -> str:
@@ -451,6 +464,116 @@ def _resolve_label_column(df: pd.DataFrame, preferred: str | None = None) -> str
         if col and col in df.columns:
             return col
     return None
+
+
+def _resolve_claim_id_column(df: pd.DataFrame, preferred: str | None = None) -> str | None:
+    candidates = [
+        preferred,
+        "claim_id",
+        "claimid",
+        "claimId",
+        "id",
+    ]
+    for col in candidates:
+        if col and col in df.columns:
+            return col
+    return None
+
+
+def _majority_label(labels: list[str]) -> str:
+    if not labels:
+        return "unverified"
+    counts = Counter(labels)
+    max_count = max(counts.values())
+    winners = [label for label, count in counts.items() if count == max_count]
+    if len(winners) != 1:
+        return "unverified"
+    return winners[0] if winners[0] in {"true", "false", "unverified"} else "unverified"
+
+
+def _aggregate_hf_claim_majority_labels(
+    df: pd.DataFrame,
+    *,
+    label_col: str,
+    claim_id_col: str,
+) -> tuple[pd.DataFrame, dict]:
+    grouped_rows: list[dict[str, object]] = []
+    dropped_groups = 0
+
+    for claim_id, group in df.groupby(claim_id_col, sort=False):
+        claim_id_text = _normalize_text_value(claim_id)
+        if claim_id_text is None:
+            dropped_groups += 1
+            continue
+
+        prompts = group["prompt"].dropna().tolist()
+        responses = group["response"].dropna().tolist()
+        sources = group["source"].dropna().tolist()
+        if not prompts:
+            dropped_groups += 1
+            continue
+
+        raw_labels = group[label_col].tolist()
+        normalized_labels = [_normalize_label(v) for v in raw_labels]
+        majority = _majority_label(normalized_labels)
+
+        grouped_rows.append(
+            {
+                "claim_id": claim_id_text,
+                "source": sources[0] if sources else "hf-dataset",
+                "prompt": prompts[0],
+                "response": responses[0] if responses else prompts[0],
+                "__majority_label": majority,
+                "__evidence_rows": int(len(group)),
+            }
+        )
+
+    grouped_df = pd.DataFrame(grouped_rows)
+    audit = {
+        "aggregation": "claim-majority",
+        "claim_id_column": claim_id_col,
+        "label_column": label_col,
+        "claims_total": int(len(grouped_df)),
+        "claim_groups_dropped": int(dropped_groups),
+        "evidence_rows_total": int(len(df)),
+    }
+    return grouped_df, audit
+
+
+def _should_use_claim_majority(args: argparse.Namespace, df: pd.DataFrame, label_col: str | None) -> bool:
+    mode = (args.hf_label_aggregation or "auto").strip().lower()
+    if mode == "row":
+        return False
+    if mode == "climatecheck-narrative":
+        return False
+    if mode == "claim-majority":
+        return True
+
+    if label_col is None:
+        return False
+    claim_id_col = _resolve_claim_id_column(df, args.hf_claim_id_col)
+    if claim_id_col is None:
+        return False
+    dataset_name = (args.hf_dataset or "").strip().lower()
+    return "climatecheck" in dataset_name
+
+
+def _should_use_climatecheck_narrative(args: argparse.Namespace, df: pd.DataFrame) -> bool:
+    mode = (args.hf_label_aggregation or "auto").strip().lower()
+    if mode == "climatecheck-narrative":
+        return "narrative" in df.columns
+    if mode in {"row", "claim-majority"}:
+        return False
+
+    dataset_name = (args.hf_dataset or "").strip().lower()
+    return "climatecheck" in dataset_name and "narrative" in df.columns
+
+
+def _normalize_climatecheck_narrative_label(value: object) -> str:
+    text = _normalize_text_value(value)
+    if text is None:
+        return "unverified"
+    return "true" if text.strip().lower() == "0_0" else "false"
 
 
 def _infer_pred_label(payload: dict) -> str:
@@ -1114,6 +1237,11 @@ def run(args: argparse.Namespace) -> None:
     if args.hf_list_origin_values and not args.hf_dataset:
         raise ValueError("Use --hf-dataset together with --hf-list-origin-values")
 
+    if args.hf_dataset and "climatecheck" in args.hf_dataset.strip().lower() and args.hf_split != "test":
+        raise ValueError(
+            f"For ClimateCheck runs, --hf-split must be 'test' (got '{args.hf_split}')."
+        )
+
     if not args.hf_list_origin_values:
         _validate_runtime(args)
 
@@ -1241,18 +1369,70 @@ def run(args: argparse.Namespace) -> None:
     df["source"] = df["source"].fillna("hf-dataset" if args.hf_dataset else "custom-dataset")
 
     valid_df = df[df["prompt"].notna() & df["response"].notna()].copy()
-    if max_rows is None:
-        records = valid_df[["source", "prompt", "response"]].reset_index(drop=True)
+    label_col = _resolve_label_column(valid_df, args.hf_label_col)
+
+    claim_majority_audit = None
+    selected_df = valid_df
+    if args.hf_dataset and _should_use_claim_majority(args, valid_df, label_col):
+        claim_id_col = _resolve_claim_id_column(valid_df, args.hf_claim_id_col)
+        if claim_id_col is None:
+            raise ValueError(
+                "Claim-level label aggregation was requested but no claim-id column was found. "
+                f"Tried preferred '{args.hf_claim_id_col}'."
+            )
+        if label_col is None:
+            raise ValueError(
+                "Claim-level label aggregation was requested but no usable label column was found."
+            )
+
+        agg_df, claim_majority_audit = _aggregate_hf_claim_majority_labels(
+            valid_df,
+            label_col=label_col,
+            claim_id_col=claim_id_col,
+        )
+        if max_rows is not None:
+            agg_df = agg_df.head(max_rows).reset_index(drop=True)
+        selected_df = agg_df
+        records = agg_df[["source", "prompt", "response", "claim_id"]].reset_index(drop=True)
     else:
-        records = valid_df[["source", "prompt", "response"]].head(max_rows).reset_index(drop=True)
+        if max_rows is not None:
+            selected_df = valid_df.head(max_rows).reset_index(drop=True)
+        records = selected_df[["source", "prompt", "response"]].reset_index(drop=True)
+
     if records.empty:
         raise ValueError("No usable rows remained after filtering empty prompt/response values")
 
     labels = None
     label_audit = None
-    label_col = _resolve_label_column(valid_df, args.hf_label_col)
-    if label_col:
-        raw_labels = valid_df[label_col].tolist() if max_rows is None else valid_df[label_col].head(max_rows).tolist()
+    if claim_majority_audit is not None:
+        labels = selected_df["__majority_label"].tolist()
+        label_audit = {
+            **claim_majority_audit,
+            "rows_considered": int(len(labels)),
+            "normalized_counts": {
+                "true": int(sum(1 for v in labels if v == "true")),
+                "false": int(sum(1 for v in labels if v == "false")),
+                "unverified": int(sum(1 for v in labels if v == "unverified")),
+            },
+        }
+    elif args.hf_dataset and _should_use_climatecheck_narrative(args, selected_df):
+        raw_labels = selected_df["narrative"].tolist()
+        labels = [_normalize_climatecheck_narrative_label(v) for v in raw_labels]
+        label_audit = {
+            "aggregation": "climatecheck-narrative",
+            "label_column": "narrative",
+            "rows_considered": int(len(labels)),
+            "raw_unique": int(len({str(v).strip() for v in raw_labels})),
+            "matched_count": int(sum(1 for v in raw_labels if _normalize_text_value(v) is not None)),
+            "fallback_count": int(sum(1 for v in raw_labels if _normalize_text_value(v) is None)),
+            "normalized_counts": {
+                "true": int(sum(1 for v in labels if v == "true")),
+                "false": int(sum(1 for v in labels if v == "false")),
+                "unverified": int(sum(1 for v in labels if v == "unverified")),
+            },
+        }
+    elif label_col:
+        raw_labels = selected_df[label_col].tolist()
         labels = [_normalize_label(v) for v in raw_labels]
         label_audit = _build_label_audit(raw_labels, labels)
 

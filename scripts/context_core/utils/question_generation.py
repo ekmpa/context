@@ -2,7 +2,7 @@
 import os
 from typing import List
 
-from context_core.llm import completion_text
+from context_core.llm import completion_text, completion_text_batch
 
 
 DEFAULT_MAX_CLAIM_CHARS = 2000
@@ -83,29 +83,29 @@ def run_rarr_question_generation(
         return prompt.format(claim=active_claim).strip()
 
     questions = set()
-    for _ in range(num_rounds):
-        active_claim = truncated_claim
-        response_text = ""
+    active_claim = truncated_claim
+    response_texts: list[str] = []
 
-        # Retry with smaller claim slices if the model still reports context overflow.
-        for _attempt in range(3):
-            gpt3_input = _build_prompt(active_claim)
-            try:
-                response_text = completion_text(
-                    gpt3_input,
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=256,
-                    num_retries=num_retries,
-                )
-                break
-            except RuntimeError as exc:
-                if _is_context_window_error(exc) and len(active_claim) > MIN_CLAIM_CHARS:
-                    next_len = max(MIN_CLAIM_CHARS, int(len(active_claim) * 0.6))
-                    active_claim = _truncate_claim(active_claim, next_len)
-                    continue
-                raise
+    # Retry with smaller claim slices if the model still reports context overflow.
+    for _attempt in range(3):
+        prompts = [_build_prompt(active_claim) for _ in range(num_rounds)]
+        try:
+            response_texts = completion_text_batch(
+                prompts,
+                model=model,
+                temperature=temperature,
+                max_tokens=256,
+                num_retries=num_retries,
+            )
+            break
+        except RuntimeError as exc:
+            if _is_context_window_error(exc) and len(active_claim) > MIN_CLAIM_CHARS:
+                next_len = max(MIN_CLAIM_CHARS, int(len(active_claim) * 0.6))
+                active_claim = _truncate_claim(active_claim, next_len)
+                continue
+            raise
 
+    for response_text in response_texts:
         cur_round_questions = parse_api_response(response_text.strip())
         questions.update(cur_round_questions)
 

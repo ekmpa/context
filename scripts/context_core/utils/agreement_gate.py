@@ -3,7 +3,7 @@ import os
 import re
 from typing import Any, Dict, Tuple
 
-from context_core.llm import chat_text, completion_text
+from context_core.llm import chat_text, completion_text, chat_text_batch, completion_text_batch
 
 
 DEFAULT_MAX_GATE_CLAIM_CHARS = 2000
@@ -89,14 +89,17 @@ def parse_api_response(api_response: str) -> Tuple[bool, str, str]:
     elif lines:
         reason = lines[0]
 
-    decision_match = re.search(
+    decision_matches = re.findall(
         r"(?:therefore\s*:|final answer\s*:|decision\s*:|label\s*:)?\s*"
         r"(agrees|disagrees|ambiguous|unverifiable|irrelevant|unknown|support|supports|refute|refutes|contradict|contradicts)\b",
         response_text,
         flags=re.IGNORECASE,
     )
-    if decision_match:
-        decision = _normalize_decision(decision_match.group(1))
+    if decision_matches:
+        # Some local models echo the full prompt (including "agrees | disagrees ...")
+        # before their answer. Use the last matched label token to capture the
+        # model's final decision instead of an echoed instruction token.
+        decision = _normalize_decision(decision_matches[-1])
     elif lines:
         decision = _normalize_decision(lines[-1])
     else:
@@ -253,3 +256,133 @@ def run_agreement_gate(
         "prompt_input": gpt3_input,
     }
     return gate
+
+
+def run_agreement_gate_batch(
+    claim: str,
+    evidence_rows: list[tuple[str, str, str]],
+    model: str,
+    prompt: str,
+    context: str = None,
+    num_retries: int = 5,
+) -> list[Dict[str, Any]]:
+    if not evidence_rows:
+        return []
+
+    prepared: list[tuple[str, str]] = []
+    claim_clipped = _clip_text(
+        claim,
+        _get_int_env("RARR_MAX_GATE_CLAIM_CHARS", DEFAULT_MAX_GATE_CLAIM_CHARS, 240),
+    )
+    use_compact_prompt = os.getenv("RARR_USE_COMPACT_GATE_PROMPT", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    for query, evidence, structural_context in evidence_rows:
+        query_clipped = _clip_text(
+            query,
+            _get_int_env("RARR_MAX_GATE_QUERY_CHARS", DEFAULT_MAX_GATE_QUERY_CHARS, 64),
+        )
+        evidence_clipped = _clip_text(
+            evidence,
+            _get_int_env("RARR_MAX_GATE_EVIDENCE_CHARS", DEFAULT_MAX_GATE_EVIDENCE_CHARS, 256),
+        )
+        structural_clipped = _clip_text(
+            structural_context,
+            _get_int_env("RARR_MAX_GATE_STRUCTURAL_CHARS", DEFAULT_MAX_GATE_STRUCTURAL_CHARS, 128),
+        )
+
+        if use_compact_prompt:
+            if structural_clipped:
+                gpt3_input = COMPACT_AGREEMENT_GATE_TEMPLATE.format(
+                    claim=claim_clipped,
+                    query=query_clipped,
+                    evidence=evidence_clipped,
+                    structural_context=structural_clipped,
+                ).strip()
+            else:
+                gpt3_input = RAW_COMPACT_GATE_TEMPLATE.format(
+                    claim=claim_clipped,
+                    query=query_clipped,
+                    evidence=evidence_clipped,
+                ).strip()
+            system_role = (
+                "You are a fact-checking judge. Output exactly one label: agrees, disagrees, ambiguous, or unverifiable."
+                if not structural_clipped
+                else (
+                    "You are a strict fact-checking judge. "
+                    "Use source/domain context as a reliability prior. "
+                    "When temporal history is present, weigh consistency across months and repeated peers as stronger evidence than one-off spikes. "
+                    "Output exactly one token label: agrees, disagrees, ambiguous, or unverifiable."
+                )
+            )
+        elif context:
+            gpt3_input = prompt.format(
+                context=context,
+                claim=claim_clipped,
+                query=query_clipped,
+                evidence=evidence_clipped,
+                structural_context=structural_clipped or "No structural graph evidence provided.",
+            ).strip()
+            system_role = ""
+        else:
+            gpt3_input = prompt.format(
+                claim=claim_clipped,
+                query=query_clipped,
+                evidence=evidence_clipped,
+                structural_context=structural_clipped or "No structural graph evidence provided.",
+            ).strip()
+            system_role = ""
+
+        prepared.append((gpt3_input, system_role))
+
+    if use_compact_prompt:
+        # When system role differs per prompt, issue one grouped call per system role.
+        grouped: dict[str, list[tuple[int, str]]] = {}
+        for idx, (gpt3_input, system_role) in enumerate(prepared):
+            grouped.setdefault(system_role, []).append((idx, gpt3_input))
+
+        raw_outputs: list[str] = [""] * len(prepared)
+        for system_role, entries in grouped.items():
+            batch_inputs = [[{"role": "user", "content": prompt_input}] for _, prompt_input in entries]
+            batch_outputs = chat_text_batch(
+                batch_inputs,
+                model=model,
+                system_role=system_role,
+                temperature=0.0,
+                num_retries=num_retries,
+                waiting=2.0,
+            )
+            for (idx, _), text in zip(entries, batch_outputs):
+                raw_outputs[idx] = text
+    else:
+        prompts = [gpt3_input for gpt3_input, _ in prepared]
+        raw_outputs = completion_text_batch(
+            prompts,
+            model=model,
+            temperature=0.0,
+            max_tokens=256,
+            num_retries=num_retries,
+            waiting=2.0,
+            logit_bias={"50256": -100},
+        )
+
+    gates: list[Dict[str, Any]] = []
+    for (gpt3_input, _), response_text in zip(prepared, raw_outputs):
+        response_text = (response_text or "").strip()
+        if not response_text:
+            response_text = "unverifiable"
+        is_open, reason, decision = parse_api_response(response_text)
+        gates.append(
+            {
+                "is_open": is_open,
+                "reason": reason,
+                "decision": decision,
+                "raw_response": response_text,
+                "prompt_input": gpt3_input,
+            }
+        )
+    return gates

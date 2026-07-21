@@ -107,10 +107,39 @@ def _normalize_label(value: object) -> str:
             return "false"
         return "unverified"
     low = str(value).strip().lower()
-    if low in {"true", "supported", "support", "factual", "real", "correct"}:
+    if low in {
+        "true",
+        "supported",
+        "support",
+        "supports",
+        "factual",
+        "real",
+        "correct",
+        "entailment",
+        "entails",
+    }:
         return "true"
-    if low in {"false", "refuted", "fake", "incorrect"}:
+    if low in {
+        "false",
+        "refuted",
+        "refute",
+        "refutes",
+        "contradiction",
+        "contradicts",
+        "fake",
+        "incorrect",
+    }:
         return "false"
+    if low in {
+        "unverified",
+        "unverifiable",
+        "not enough info",
+        "not enough information",
+        "nei",
+        "unknown",
+        "undefined",
+    }:
+        return "unverified"
     return "unverified"
 
 

@@ -104,15 +104,27 @@ class RARRRetriever(StandardTaskSolver):
                 questions = [claim_for_qgen]
 
             evidences = []
+            search_query_failures = 0
+            search_queries_succeeded = 0
             if self.query_workers <= 1 or len(questions) <= 1:
                 for question in questions:
-                    q_evidences = search.run_search(
-                        query=question,
-                        max_search_results_per_query=self.max_search_results_per_query,
-                        max_sentences_per_passage=self.max_sentences_per_passage,
-                        sliding_distance=self.sliding_distance,
-                        max_passages_per_search_result_to_return=self.max_passages_per_search_result,
-                    )
+                    try:
+                        q_evidences = search.run_search(
+                            query=question,
+                            max_search_results_per_query=self.max_search_results_per_query,
+                            max_sentences_per_passage=self.max_sentences_per_passage,
+                            sliding_distance=self.sliding_distance,
+                            max_passages_per_search_result_to_return=self.max_passages_per_search_result,
+                        )
+                    except search.SearchQueryFailed as exc:
+                        search_query_failures += 1
+                        logging.warning(
+                            "[rarr_retriever] search query failed; skipping question=%r err=%s",
+                            question,
+                            exc,
+                        )
+                        continue
+                    search_queries_succeeded += 1
                     evidences.extend(
                         [
                             (question, x["text"], x.get("structural_context", ""))
@@ -139,13 +151,25 @@ class RARRRetriever(StandardTaskSolver):
                     futures = [pool.submit(_run_one_question, q) for q in questions]
                     for question, fut in zip(questions, futures):
                         try:
-                            evidences.extend(fut.result())
+                            question_evidences = fut.result()
+                            search_queries_succeeded += 1
+                            evidences.extend(question_evidences)
                         except Exception as exc:
+                            if isinstance(exc, search.SearchQueryFailed):
+                                search_query_failures += 1
                             logging.warning(
                                 "[rarr_retriever] parallel search failed; skipping query=%r err=%s",
                                 question,
                                 exc,
                             )
+
+            state.set("search_queries_total", len(questions))
+            state.set("search_queries_succeeded", search_queries_succeeded)
+            state.set("search_query_failures", search_query_failures)
+            state.set(
+                "search_failed",
+                len(questions) > 0 and search_queries_succeeded == 0 and search_query_failures > 0,
+            )
                
             results[claim] = evidences
 

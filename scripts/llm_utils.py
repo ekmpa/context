@@ -4,7 +4,7 @@ import os
 from threading import Lock
 from typing import Any
 
-_PIPELINE_CACHE: dict[str, tuple[Any, Any]] = {}
+_PIPELINE_CACHE: dict[tuple[str, str], tuple[Any, Any]] = {}
 _CACHE_LOCK = Lock()
 _CLIENT_CACHE: dict[tuple[str, str], Any] = {}
 
@@ -17,44 +17,110 @@ def _load_dotenv_if_available() -> None:
     load_dotenv(override=False)
 
 
-def _load_qwen_pipeline(model_name: str):
-    """Load and cache tokenizer + generation pipeline for a model name."""
+def _resolve_qwen_device() -> str:
+    _load_dotenv_if_available()
+    configured_device = os.getenv("CONTEXT_QWEN_DEVICE", "").strip().lower()
+    if configured_device in {"", "auto"}:
+        configured_device = ""
+
     try:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+    except ImportError as exc:
+        raise RuntimeError("torch is required for local Qwen generation") from exc
+
+    if configured_device:
+        if configured_device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CONTEXT_QWEN_DEVICE requests CUDA, but torch.cuda.is_available() is False. "
+                "Request a GPU or set CONTEXT_QWEN_DEVICE=cpu."
+            )
+        return configured_device
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _load_qwen_pipeline(model_name: str):
+    """Load and cache tokenizer + causal LM for a model name."""
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError as exc:
         raise RuntimeError(
             "Missing dependencies for Qwen utilities. Install with: "
             "uv pip install transformers accelerate torch"
         ) from exc
 
+    device = _resolve_qwen_device()
+    cache_key = (model_name, device)
+
     with _CACHE_LOCK:
-        cached = _PIPELINE_CACHE.get(model_name)
+        cached = _PIPELINE_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = model.to(device)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map="auto",
+        # Decoder-only models (for example Qwen) should use left padding for generation.
+        tokenizer.padding_side = "left"
+        if getattr(tokenizer, "pad_token_id", None) is None and getattr(tokenizer, "eos_token_id", None) is not None:
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        _PIPELINE_CACHE[cache_key] = (tokenizer, model)
+        return tokenizer, model
+
+
+def _get_model_device(model: Any):
+    device = getattr(model, "device", None)
+    if device is not None:
+        return device
+    try:
+        return next(model.parameters()).device
+    except StopIteration as exc:
+        raise RuntimeError("Loaded Qwen model has no parameters to infer device placement") from exc
+
+
+def _batch_generate(tokenizer: Any, model: Any, prompts: list[str], max_new_tokens: int = 512) -> list[str]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("torch is required for local Qwen generation") from exc
+
+    if not prompts:
+        return []
+
+    device = _get_model_device(model)
+    enc = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    )
+    enc = {key: value.to(device) for key, value in enc.items()}
+
+    with torch.inference_mode():
+        outputs = model.generate(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None),
         )
 
-        # Prevent transformers from mixing default max_length (often 20) with
-        # explicit max_new_tokens, which triggers noisy warnings.
-        generation_config = getattr(model, "generation_config", None)
-        if generation_config is not None and hasattr(generation_config, "max_length"):
-            generation_config.max_length = None
+    attention_mask = enc.get("attention_mask")
+    if attention_mask is None:
+        prompt_lengths = [enc["input_ids"].shape[1]] * outputs.shape[0]
+    else:
+        prompt_lengths = attention_mask.sum(dim=1).tolist()
 
-        generator = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else "auto",
-        )
-
-        _PIPELINE_CACHE[model_name] = (tokenizer, generator)
-        return tokenizer, generator
+    completions: list[str] = []
+    for row_index, prompt_len in enumerate(prompt_lengths):
+        generated_ids = outputs[row_index, int(prompt_len):]
+        text = tokenizer.decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).strip()
+        completions.append(text)
+    return completions
 
 
 def _get_openai_client(api_key: str | None = None):
@@ -149,20 +215,10 @@ def query_qwen(model_name: str, query: str) -> str:
     if not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    tokenizer, generator = _load_qwen_pipeline(model_name.strip())
+    tokenizer, model = _load_qwen_pipeline(model_name.strip())
     prompt = _build_prompt(tokenizer, query)
-
-    outputs = generator(
-        prompt,
-        max_new_tokens=512,
-        max_length=None,
-        do_sample=False,
-        return_full_text=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-
-    first_output = outputs[0] if outputs else ""
-    return _extract_generated_text(first_output)
+    outputs = _batch_generate(tokenizer, model, [prompt], max_new_tokens=512)
+    return outputs[0] if outputs else ""
 
 
 def query_qwen_batch(model_name: str, queries: list[str]) -> list[str]:
@@ -184,24 +240,16 @@ def query_qwen_batch(model_name: str, queries: list[str]) -> list[str]:
     if any(not q for q in normalized_queries):
         raise ValueError("queries must not contain empty prompts")
 
-    tokenizer, generator = _load_qwen_pipeline(model_name.strip())
+    tokenizer, model = _load_qwen_pipeline(model_name.strip())
     prompts = [_build_prompt(tokenizer, query) for query in normalized_queries]
-
-    outputs = generator(
-        prompts,
-        max_new_tokens=512,
-        max_length=None,
-        do_sample=False,
-        return_full_text=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
+    outputs = _batch_generate(tokenizer, model, prompts, max_new_tokens=512)
 
     if len(outputs) != len(prompts):
         raise RuntimeError(
             f"Unexpected output count from generator: got {len(outputs)}, expected {len(prompts)}"
         )
 
-    return [_extract_generated_text(item) for item in outputs]
+    return outputs
 
 
 def query_gpt(model_name: str, query: str, *, api_key: str | None = None) -> str:

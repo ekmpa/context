@@ -166,6 +166,8 @@ def evaluate_free_text_with_auto_checker(
         }
         if error_message is not None:
             result["error"] = error_message
+        if state.get("search_failed"):
+            result["discarded"] = True
 
         return result
 
@@ -179,5 +181,16 @@ def evaluate_free_text_with_auto_checker(
             for fut in concurrent.futures.as_completed(futures):
                 entries.append(fut.result())
         entries.sort(key=lambda x: x.get("index", 0))
+
+    total_entries = len(entries)
+    discarded_entries = [entry for entry in entries if entry.get("discarded")]
+    if discarded_entries:
+        entries = [entry for entry in entries if not entry.get("discarded")]
+        discarded_ratio = len(discarded_entries) / total_entries if total_entries else 0.0
+        if discarded_ratio > 0.10:
+            raise RuntimeError(
+                f"Aborting run: {len(discarded_entries)}/{total_entries} queries failed after retries "
+                f"({100.0 * discarded_ratio:.1f}%), which exceeds the 10% limit."
+            )
 
     return entries

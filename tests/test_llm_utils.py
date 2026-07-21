@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import llm_utils
+from scripts.context_core import llm as context_llm
 
 
 class _TokenizerWithTemplate:
@@ -16,6 +18,10 @@ class _TokenizerWithTemplate:
 
 class _TokenizerNoTemplate:
     eos_token_id = 9
+
+    def __init__(self):
+        self.pad_token_id = None
+        self.padding_side = "right"
 
 
 class _Generator:
@@ -84,53 +90,88 @@ class _FakeGeminiClient:
         self.models.generate_content = _FakeGeminiModels(text).generate_content
 
 
+class _FakeModel:
+    def __init__(self):
+        self.to_calls = []
+        self.device = None
+
+    def to(self, device):
+        self.to_calls.append(device)
+        self.device = device
+        return self
+
+
 class TestQwenUtils(unittest.TestCase):
+    def tearDown(self):
+        llm_utils._PIPELINE_CACHE.clear()
+
+    def test_load_qwen_pipeline_uses_tgm_style_device_setup(self):
+        fake_model = _FakeModel()
+        fake_tokenizer = _TokenizerNoTemplate()
+        fake_transformers = SimpleNamespace(
+            AutoModelForCausalLM=SimpleNamespace(from_pretrained=lambda model_name: fake_model),
+            AutoTokenizer=SimpleNamespace(from_pretrained=lambda model_name: fake_tokenizer),
+        )
+        fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+
+        with patch.dict("sys.modules", {"transformers": fake_transformers, "torch": fake_torch}):
+            tokenizer, model = llm_utils._load_qwen_pipeline("Qwen/Qwen2.5-7B-Instruct")
+
+        self.assertIs(tokenizer, fake_tokenizer)
+        self.assertIs(model, fake_model)
+        self.assertEqual(fake_model.to_calls, ["cpu"])
+        self.assertEqual(fake_tokenizer.padding_side, "left")
+        self.assertEqual(fake_tokenizer.pad_token_id, fake_tokenizer.eos_token_id)
+
     def test_query_qwen_uses_chat_template(self):
         tok = _TokenizerWithTemplate()
-        gen = _Generator([{"generated_text": "hello"}])
+        model = object()
 
-        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, gen)):
+        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, model)), patch(
+            "scripts.llm_utils._batch_generate", return_value=["hello"]
+        ) as mock_batch:
             out = llm_utils.query_qwen("Qwen/Qwen2.5-7B-Instruct", "hi there")
 
         self.assertEqual(out, "hello")
-        self.assertEqual(gen.last_args[0], "TEMPLATE::hi there")
+        self.assertEqual(mock_batch.call_args.args[2], ["TEMPLATE::hi there"])
         self.assertEqual(tok.last_messages, [{"role": "user", "content": "hi there"}])
         self.assertFalse(tok.last_tokenize)
         self.assertTrue(tok.last_add_generation_prompt)
 
     def test_query_qwen_fallback_prompt_without_chat_template(self):
         tok = _TokenizerNoTemplate()
-        gen = _Generator([{"generated_text": "ok"}])
+        model = object()
 
-        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, gen)):
+        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, model)), patch(
+            "scripts.llm_utils._batch_generate", return_value=["ok"]
+        ) as mock_batch:
             out = llm_utils.query_qwen("Qwen/Qwen2.5-7B-Instruct", "ping")
 
         self.assertEqual(out, "ok")
-        self.assertEqual(gen.last_args[0], "User: ping\nAssistant:")
+        self.assertEqual(mock_batch.call_args.args[2], ["User: ping\nAssistant:"])
 
     def test_query_qwen_batch_returns_outputs_in_order(self):
         tok = _TokenizerWithTemplate()
-        gen = _Generator(
-            [
-                [{"generated_text": "r1"}],
-                {"generated_text": "r2"},
-            ]
-        )
+        model = object()
 
-        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, gen)):
+        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, model)), patch(
+            "scripts.llm_utils._batch_generate", return_value=["r1", "r2"]
+        ) as mock_batch:
             out = llm_utils.query_qwen_batch(
                 "Qwen/Qwen2.5-7B-Instruct",
                 ["alpha", "beta"],
             )
 
         self.assertEqual(out, ["r1", "r2"])
-        self.assertEqual(gen.last_args[0], ["TEMPLATE::alpha", "TEMPLATE::beta"])
+        self.assertEqual(mock_batch.call_args.args[2], ["TEMPLATE::alpha", "TEMPLATE::beta"])
 
     def test_query_qwen_batch_raises_on_mismatched_output_count(self):
         tok = _TokenizerWithTemplate()
-        gen = _Generator([[{"generated_text": "only-one"}]])
+        model = object()
 
-        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, gen)):
+        with patch("scripts.llm_utils._load_qwen_pipeline", return_value=(tok, model)), patch(
+            "scripts.llm_utils._batch_generate", return_value=["only-one"]
+        ):
             with self.assertRaises(RuntimeError):
                 llm_utils.query_qwen_batch(
                     "Qwen/Qwen2.5-7B-Instruct",
@@ -168,6 +209,36 @@ class TestQwenUtils(unittest.TestCase):
             llm_utils.query_gemini("", "x")
         with self.assertRaises(ValueError):
             llm_utils.query_gemini("gemini-2.0-flash", "")
+
+
+class TestContextCoreLlmBackendInference(unittest.TestCase):
+    def test_chat_text_infers_hf_local_for_qwen_model(self):
+        with patch.dict("os.environ", {}, clear=True), patch(
+            "scripts.context_core.llm.infer_backend_from_model",
+            return_value="hf-local",
+        ), patch(
+            "scripts.context_core.llm.query_qwen",
+            side_effect=lambda model_name, prompt: f"{model_name}::{prompt}",
+        ):
+            out = context_llm.chat_text(
+                "ping",
+                model="Qwen/Qwen2.5-7B-Instruct",
+                system_role="system prompt",
+            )
+
+        self.assertEqual(out, "Qwen/Qwen2.5-7B-Instruct::SYSTEM: system prompt\nUSER: ping")
+
+    def test_completion_text_prefers_explicit_backend_override(self):
+        with patch.dict("os.environ", {"CONTEXT_LLM_BACKEND": "hf-local"}, clear=True), patch(
+            "scripts.context_core.llm.query_qwen",
+            side_effect=lambda model_name, prompt: f"hf::{model_name}::{prompt}",
+        ):
+            out = context_llm.completion_text(
+                "prompt body",
+                model="gpt-5-mini",
+            )
+
+        self.assertEqual(out, "hf::gpt-5-mini::prompt body")
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ class RARRAgreementGate(StandardTaskSolver):
             evidences = evidences[:self.max_evidences_per_question]
             decisions = []
             gate_debug = []
+            backend = os.getenv("CONTEXT_LLM_BACKEND", "openai").strip().lower()
+            use_hf_local_batch = backend in {"hf-local", "hf_local", "local"}
 
             def _evaluate_evidence(evidence_item):
                 if len(evidence_item) >= 3:
@@ -66,7 +68,45 @@ class RARRAgreementGate(StandardTaskSolver):
                     },
                 }
 
-            if self.gate_workers <= 1 or len(evidences) <= 1:
+            if use_hf_local_batch and evidences:
+                normalized_rows = []
+                for evidence_item in evidences:
+                    if len(evidence_item) >= 3:
+                        query, evidence, structural_context = evidence_item[0], evidence_item[1], evidence_item[2]
+                    else:
+                        query, evidence = evidence_item
+                        structural_context = ""
+                    normalized_rows.append((query, evidence, structural_context))
+
+                try:
+                    batched = agreement_gate.run_agreement_gate_batch(
+                        claim=claim,
+                        evidence_rows=normalized_rows,
+                        model=self.model,
+                        prompt=functional_prompt.AGREEMENT_GATE_PROMPT,
+                    )
+                except Exception as exc:
+                    logging.warning("[rarr_verifier] batched agreement gate failed; falling back to per-evidence mode: %s", exc)
+                    batched = []
+
+                if batched:
+                    for gate, (query, _evidence, _structural) in zip(batched, normalized_rows):
+                        decisions.append(gate.get("decision", "unverifiable"))
+                        gate_debug.append(
+                            {
+                                "query": query,
+                                "decision": gate.get("decision"),
+                                "reason": gate.get("reason"),
+                                "raw_response": gate.get("raw_response", ""),
+                                "prompt_input": gate.get("prompt_input", ""),
+                            }
+                        )
+                else:
+                    for evidence_item in evidences:
+                        gate_out = _evaluate_evidence(evidence_item)
+                        decisions.append(gate_out["decision"])
+                        gate_debug.append(gate_out["debug"])
+            elif self.gate_workers <= 1 or len(evidences) <= 1:
                 for evidence_item in evidences:
                     gate_out = _evaluate_evidence(evidence_item)
                     decisions.append(gate_out["decision"])

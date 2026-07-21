@@ -2,11 +2,12 @@ import os
 import re
 import time
 import random
-import importlib
 from typing import Iterable
 
 import openai
 from openai import OpenAI
+
+from llm_utils import query_qwen, query_qwen_batch
 
 _CLIENT = None
 _CHAT_CAPABILITIES: dict[str, dict[str, bool]] = {}
@@ -20,18 +21,18 @@ def _is_hf_local_backend() -> bool:
     return _backend() in {"hf-local", "hf_local", "local"}
 
 
-def _load_qwen_query_fn():
-    for module_name in ("scripts.llm_utils", "llm_utils"):
-        try:
-            module = importlib.import_module(module_name)
-            query_qwen = getattr(module, "query_qwen", None)
-            if callable(query_qwen):
-                return query_qwen
-        except Exception:
-            continue
-    raise RuntimeError(
-        "CONTEXT_LLM_BACKEND=hf-local requires llm_utils.query_qwen to be importable"
-    )
+def _coerce_chat_histories(user_inputs):
+    if isinstance(user_inputs, str):
+        return [{"role": "user", "content": user_inputs}]
+    if isinstance(user_inputs, list):
+        if all(isinstance(x, str) for x in user_inputs):
+            return [
+                {"role": "user" if i % 2 == 0 else "assistant", "content": x}
+                for i, x in enumerate(user_inputs)
+            ]
+        if all(isinstance(x, dict) for x in user_inputs):
+            return user_inputs
+    raise ValueError("Invalid input for LLM chat call")
 
 
 def _is_invalid_model_error(exc: openai.OpenAIError) -> bool:
@@ -198,43 +199,16 @@ def chat_text(
     waiting: float = 1.0,
 ) -> str:
     if _is_hf_local_backend():
-        if isinstance(user_inputs, str):
-            chat_histories = [{"role": "user", "content": user_inputs}]
-        elif isinstance(user_inputs, list):
-            if all(isinstance(x, str) for x in user_inputs):
-                chat_histories = [
-                    {"role": "user" if i % 2 == 0 else "assistant", "content": x}
-                    for i, x in enumerate(user_inputs)
-                ]
-            elif all(isinstance(x, dict) for x in user_inputs):
-                chat_histories = user_inputs
-            else:
-                raise ValueError("Invalid input for LLM chat call")
-        else:
-            raise ValueError("Invalid input for LLM chat call")
+        chat_histories = _coerce_chat_histories(user_inputs)
 
         merged = [{"role": "system", "content": system_role}] + chat_histories
         prompt = _messages_to_text(merged)
-        query_qwen = _load_qwen_query_fn()
         return query_qwen(model.strip(), prompt)
 
     consecutive_rate_limits = 0
     for attempt in range(1, num_retries + 1):
         try:
-            if isinstance(user_inputs, str):
-                chat_histories = [{"role": "user", "content": user_inputs}]
-            elif isinstance(user_inputs, list):
-                if all(isinstance(x, str) for x in user_inputs):
-                    chat_histories = [
-                        {"role": "user" if i % 2 == 0 else "assistant", "content": x}
-                        for i, x in enumerate(user_inputs)
-                    ]
-                elif all(isinstance(x, dict) for x in user_inputs):
-                    chat_histories = user_inputs
-                else:
-                    raise ValueError("Invalid input for LLM chat call")
-            else:
-                raise ValueError("Invalid input for LLM chat call")
+            chat_histories = _coerce_chat_histories(user_inputs)
 
             messages = [{"role": "system", "content": system_role}] + chat_histories
             response = _chat_completion_with_fallbacks(
@@ -249,7 +223,8 @@ def chat_text(
             if _is_invalid_model_error(exc):
                 raise RuntimeError(
                     "OpenAI backend rejected the model id. "
-                    "If using Hugging Face models like Qwen/*, set CONTEXT_LLM_BACKEND=hf-local."
+                    "If using Hugging Face models like Qwen/*, either rely on backend inference "
+                    "from the model name or set CONTEXT_LLM_BACKEND=hf-local explicitly."
                 ) from exc
             if _is_context_length_error(exc):
                 raise RuntimeError("LLM prompt exceeds model context window") from exc
@@ -277,6 +252,40 @@ def chat_text(
     raise RuntimeError("LLM chat call failed after retries")
 
 
+def chat_text_batch(
+    user_inputs_batch,
+    *,
+    model: str,
+    system_role: str,
+    temperature: float = 1.0,
+    num_retries: int = 3,
+    waiting: float = 1.0,
+) -> list[str]:
+    if not isinstance(user_inputs_batch, list) or not user_inputs_batch:
+        raise ValueError("user_inputs_batch must be a non-empty list")
+
+    if _is_hf_local_backend():
+        prompts: list[str] = []
+        for user_inputs in user_inputs_batch:
+            chat_histories = _coerce_chat_histories(user_inputs)
+            merged = [{"role": "system", "content": system_role}] + chat_histories
+            prompts.append(_messages_to_text(merged))
+        return query_qwen_batch(model.strip(), prompts)
+
+    # Keep remote APIs simple and stable; batch locally only for hf-local.
+    return [
+        chat_text(
+            user_inputs,
+            model=model,
+            system_role=system_role,
+            temperature=temperature,
+            num_retries=num_retries,
+            waiting=waiting,
+        )
+        for user_inputs in user_inputs_batch
+    ]
+
+
 def completion_text(
     prompt: str,
     *,
@@ -289,7 +298,6 @@ def completion_text(
     logit_bias: dict[str, int] | None = None,
 ) -> str:
     if _is_hf_local_backend():
-        query_qwen = _load_qwen_query_fn()
         text = query_qwen(model.strip(), prompt)
         if stop:
             cutoff = None
@@ -331,7 +339,8 @@ def completion_text(
             if _is_invalid_model_error(exc):
                 raise RuntimeError(
                     "OpenAI backend rejected the model id. "
-                    "If using Hugging Face models like Qwen/*, set CONTEXT_LLM_BACKEND=hf-local."
+                    "If using Hugging Face models like Qwen/*, either rely on backend inference "
+                    "from the model name or set CONTEXT_LLM_BACKEND=hf-local explicitly."
                 ) from exc
             if _is_context_length_error(exc):
                 raise RuntimeError("LLM prompt exceeds model context window") from exc
@@ -358,3 +367,48 @@ def completion_text(
             )
             time.sleep(retry_wait)
     raise RuntimeError("LLM completion call failed after retries")
+
+
+def completion_text_batch(
+    prompts: list[str],
+    *,
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int = 256,
+    stop: Iterable[str] | None = None,
+    num_retries: int = 5,
+    waiting: float = 1.0,
+    logit_bias: dict[str, int] | None = None,
+) -> list[str]:
+    if not prompts:
+        return []
+
+    if _is_hf_local_backend():
+        outputs = query_qwen_batch(model.strip(), prompts)
+        if stop:
+            trimmed: list[str] = []
+            for text in outputs:
+                cutoff = None
+                for marker in stop:
+                    idx = text.find(marker)
+                    if idx >= 0:
+                        cutoff = idx if cutoff is None else min(cutoff, idx)
+                if cutoff is not None:
+                    text = text[:cutoff]
+                trimmed.append(text)
+            return trimmed
+        return outputs
+
+    return [
+        completion_text(
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            num_retries=num_retries,
+            waiting=waiting,
+            logit_bias=logit_bias,
+        )
+        for prompt in prompts
+    ]

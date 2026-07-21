@@ -10,6 +10,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 import threading
 from collections import Counter
 from typing import Any, Dict, List, Tuple
@@ -47,8 +48,10 @@ STRUCTURAL_CACHE_LOCK = threading.Lock()
 SEARCH_STATS: Dict[str, int] = {
     "search_timeouts": 0,
     "serper_timeout_fallback_to_ddg": 0,
+    "serper_empty_fallback_to_ddg": 0,
     "provider_failures": 0,
     "queries_with_no_results": 0,
+    "queries_discarded": 0,
     "structural_queries_total": 0,
     "structural_queries_with_context": 0,
     "structural_evidence_total": 0,
@@ -65,6 +68,14 @@ def _record_search_stat(key: str, value: int = 1) -> None:
     SEARCH_STATS[key] = SEARCH_STATS.get(key, 0) + value
 
 
+class SearchQueryFailed(RuntimeError):
+    """Raised when a query still fails after provider retries."""
+
+
+def _search_retry_wait_seconds(attempt: int, base_wait: float = 1.0) -> float:
+    return base_wait * (2 ** max(0, attempt - 1))
+
+
 def reset_search_stats() -> None:
     for key in list(SEARCH_STATS.keys()):
         SEARCH_STATS[key] = 0
@@ -78,26 +89,13 @@ def _is_timeout_exception(exc: Exception) -> bool:
     return isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ReadTimeout))
 
 
-def _structural_enabled() -> bool:
-    return os.getenv("RARR_STRUCTURAL_MODE", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _condition_mode() -> str:
     mode = os.getenv("RARR_CONDITION", "").strip().lower()
-    if mode in {"raw", "structural", "third-party", "third_party", "source_attr", "source-attr"}:
-        if mode == "third_party":
-            return "third-party"
-        if mode in {"source_attr", "source-attr"}:
-            return "source_attr"
+    if mode in {"raw", "structural", "third-party", "source_attr"}:
         return mode
-    if _structural_enabled():
-        return "structural"
-    return "raw"
+    raise RuntimeError(
+        "RARR_CONDITION must be one of: raw, structural, third-party, source_attr"
+    )
 
 
 def _is_missing_text(value: Any) -> bool:
@@ -776,46 +774,49 @@ def search_duckduckgo(query: str, timeout: float = 3) -> List[str]:
 
 
 def search_web(query: str, timeout: float = 3) -> List[str]:
-    """Dispatch web search by provider with an automatic fallback policy.
+    """Dispatch web search by provider.
 
     Providers:
     - serper: requires SERPER_API_KEY
     - duckduckgo: no key
-    - auto: serper -> duckduckgo
+    - auto: serper when configured, otherwise DuckDuckGo
     """
-    provider = os.getenv("RARR_SEARCH_PROVIDER", "serper").strip().lower()
+    provider = os.getenv("RARR_SEARCH_PROVIDER", "auto").strip().lower()
+    serper_key = os.getenv("SERPER_API_KEY")
+
+    if provider in {"auto", "serper"} and not serper_key:
+        if provider == "serper":
+            logger.warning("[search] SERPER_API_KEY is missing; using DuckDuckGo instead.")
+        return search_duckduckgo(query, timeout=timeout)
 
     if provider == "serper":
         try:
-            return search_serper(query, timeout=timeout)
+            results = search_serper(query, timeout=timeout)
+            if results:
+                return results
+            _record_search_stat("serper_empty_fallback_to_ddg")
+            logger.warning("[search] Serper returned no results for query %r; trying DuckDuckGo instead.", query)
         except Exception as exc:
             if _is_timeout_exception(exc):
                 _record_search_stat("search_timeouts")
                 _record_search_stat("serper_timeout_fallback_to_ddg")
-                logger.warning(
-                    "[search] Serper timed out for query %r; trying DuckDuckGo instead.",
-                    query,
-                )
+                logger.warning("[search] Serper timed out for query %r; trying DuckDuckGo instead.", query)
             else:
                 _record_search_stat("provider_failures")
-                logger.warning(
-                    "[search] Serper failed for query %r: %s. Trying DuckDuckGo instead.",
-                    query,
-                    exc,
-                )
+                logger.warning("[search] Serper failed for query %r: %s. Trying DuckDuckGo instead.", query, exc)
 
-            try:
-                return search_duckduckgo(query, timeout=timeout)
-            except Exception as ddg_exc:
-                if _is_timeout_exception(ddg_exc):
-                    _record_search_stat("search_timeouts")
-                _record_search_stat("provider_failures")
-                logger.warning(
-                    "[search] DuckDuckGo failed after Serper failure for query %r: %s",
-                    query,
-                    ddg_exc,
-                )
-                return []
+        try:
+            return search_duckduckgo(query, timeout=timeout)
+        except Exception as ddg_exc:
+            if _is_timeout_exception(ddg_exc):
+                _record_search_stat("search_timeouts")
+            _record_search_stat("provider_failures")
+            logger.warning(
+                "[search] DuckDuckGo failed after Serper attempt for query %r: %s",
+                query,
+                ddg_exc,
+            )
+            raise RuntimeError(f"search providers failed for query {query!r}") from ddg_exc
     if provider == "duckduckgo":
         try:
             return search_duckduckgo(query, timeout=timeout)
@@ -876,6 +877,15 @@ def run_search(
         retrieved_passages: Top retrieved passages for the search query.
     """
     mode = _condition_mode()
+    if timeout <= 0:
+        timeout = 3
+
+    env_timeout = os.getenv("RARR_SEARCH_TIMEOUT", "").strip()
+    if env_timeout:
+        try:
+            timeout = max(1.0, float(env_timeout))
+        except Exception:
+            pass
     if mode == "structural":
         _record_search_stat("structural_queries_total")
 
@@ -888,12 +898,42 @@ def run_search(
     if cached_search_results is not None:
         search_results = cached_search_results
     else:
+        raw_retries = os.getenv("RARR_SEARCH_RETRIES", "3").strip()
         try:
-            search_results = search_web(query, timeout=timeout)
-        except Exception as exc:
-            _record_search_stat("provider_failures")
-            logger.warning("[search] Search failed for query %r: %s", query, exc)
-            return []
+            num_retries = max(0, int(raw_retries))
+        except Exception:
+            num_retries = 3
+
+        search_results = []
+        last_error: Exception | None = None
+        for attempt in range(num_retries + 1):
+            try:
+                search_results = search_web(query, timeout=timeout)
+                if search_results:
+                    break
+                last_error = RuntimeError(f"No search results returned for query {query!r}")
+            except Exception as exc:
+                last_error = exc
+
+            if attempt >= num_retries:
+                break
+
+            retry_wait = _search_retry_wait_seconds(attempt + 1)
+            logger.warning(
+                "[search] Search failed for query %r: %s. Retrying in %.2fs (%d/%d)...",
+                query,
+                last_error,
+                retry_wait,
+                attempt + 1,
+                num_retries,
+            )
+            time.sleep(retry_wait)
+
+        if not search_results:
+            _record_search_stat("queries_discarded")
+            raise SearchQueryFailed(
+                f"Search failed for query {query!r} after {num_retries + 1} attempts"
+            ) from last_error
 
     if not search_results:
         _record_search_stat("queries_with_no_results")
