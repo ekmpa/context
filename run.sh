@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=long
-#SBATCH --job-name=climate-Tstruct
+#SBATCH --job-name=fakecovid-struct-t2-5
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --time=48:00:00
@@ -16,18 +16,18 @@ module load python/3.10
 ROOT_DIR="."
 ENV_FILE="${ROOT_DIR}/.env"
 
-DATASET="climatecheck"
+DATASET="${DATASET:-fakecovid}"
 HF_DATASET="rabuahmad/climatecheck"
 HF_CONFIG="default"
 HF_SPLIT="test"
 HF_LABEL_AGGREGATION="climatecheck-narrative"
-CONDITION="structural" # raw | structural | third-party | source_attr
-# RARR_MODEL="Qwen/Qwen3-1.7B"
-RARR_MODEL="gpt-5-mini"
+CONDITION="${CONDITION:-structural}" # raw | structural | third-party | source_attr
+RARR_MODEL="Qwen/Qwen3-1.7B"
+# RARR_MODEL="gpt-5-mini"
 MAX_ROWS=""
 
 STRUCTURAL_SHARDS_DIR="$SCRATCH/credibench-neighbors_serving_shards"
-STRUCTURAL_HOPS="1"
+STRUCTURAL_HOPS="${STRUCTURAL_HOPS:-2}"
 STRUCTURAL_MAX_DOMAINS_PER_HOP="5"
 STRUCTURAL_HOOK_MODE="temporal" # temporal | latest
 STRUCTURAL_MONTHS_BACK="3"
@@ -35,7 +35,7 @@ STRUCTURAL_HOOK_TIMEOUT="40"
 STRUCTURAL_CACHE_FILE="${ROOT_DIR}/data/structural_neighbors_cache.json"
 THIRD_PARTY_RATINGS_FILE="${ROOT_DIR}/data/domain_ratings.csv"
 
-INIT_SEED="4"
+INIT_SEED="${INIT_SEED:-5}"
 MIN_SAMPLES_PER_SPLIT="20"
 MAX_SAMPLES_PER_LABEL="1000"
 
@@ -70,7 +70,6 @@ echo "[INFO] HF selector=${HF_DATASET}/${HF_CONFIG}:${HF_SPLIT}"
 echo "[INFO] CONDITION=${RARR_CONDITION}"
 echo "[INFO] MODEL=${RARR_MODEL}"
 echo "[INFO] MAX_ROWS=${MAX_ROWS:-all}"
-echo "[INFO] passthrough args are disabled; edit this file to change run parameters"
 
 declare -a RUN_ARGS=()
 EXTRA_ARGS=()
