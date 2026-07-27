@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --partition=long
-#SBATCH --job-name=fakecovid-struct-t2-5
+#SBATCH --job-name=test-gemini
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
@@ -11,7 +11,8 @@
 set -euo pipefail
 mkdir -p logs
 
-module load python/3.10
+module load python/3.10 
+
 
 ROOT_DIR="."
 ENV_FILE="${ROOT_DIR}/.env"
@@ -21,9 +22,13 @@ HF_DATASET="rabuahmad/climatecheck"
 HF_CONFIG="default"
 HF_SPLIT="test"
 HF_LABEL_AGGREGATION="climatecheck-narrative"
-CONDITION="${CONDITION:-structural}" # raw | structural | third-party | source_attr
+PIPELINE="${PIPELINE:-facttool}" # rarr | facttool
+CONDITION="${CONDITION:-raw}" # raw | structural | third-party | source_attr
 RARR_MODEL="Qwen/Qwen3-1.7B"
 # RARR_MODEL="gpt-5-mini"
+# RARR_MODEL="gemini-3.1-flash-lite"
+# FACTTOOL_MODEL="gpt-5-mini"
+FACTTOOL_MODEL="Qwen/Qwen3-1.7B" # gpt-5-mini
 MAX_ROWS=""
 
 STRUCTURAL_SHARDS_DIR="$SCRATCH/credibench-neighbors_serving_shards"
@@ -31,6 +36,7 @@ STRUCTURAL_HOPS="${STRUCTURAL_HOPS:-2}"
 STRUCTURAL_MAX_DOMAINS_PER_HOP="5"
 STRUCTURAL_HOOK_MODE="temporal" # temporal | latest
 STRUCTURAL_MONTHS_BACK="3"
+STRUCTURAL_TEMPORAL_FALLBACK_TO_1HOP="1"
 STRUCTURAL_HOOK_TIMEOUT="40"
 STRUCTURAL_CACHE_FILE="${ROOT_DIR}/data/structural_neighbors_cache.json"
 THIRD_PARTY_RATINGS_FILE="${ROOT_DIR}/data/domain_ratings.csv"
@@ -48,6 +54,8 @@ set +a
 
 export RARR_CONDITION="${CONDITION}"
 export RARR_MODEL="${RARR_MODEL}"
+export FACTCHECK_PIPELINE="${PIPELINE}"
+export FACTTOOL_MODEL="${FACTTOOL_MODEL}"
 export RARR_THIRD_PARTY_RATINGS_FILE="${THIRD_PARTY_RATINGS_FILE}"
 export RARR_SEED="${INIT_SEED}"
 export RARR_NUM_ROUNDS_QGEN="3"
@@ -62,13 +70,16 @@ export RARR_STRUCTURAL_HOPS="${STRUCTURAL_HOPS}"
 export RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP="${STRUCTURAL_MAX_DOMAINS_PER_HOP}"
 export RARR_STRUCTURAL_HOOK_MODE="${STRUCTURAL_HOOK_MODE}"
 export RARR_STRUCTURAL_MONTHS_BACK="${STRUCTURAL_MONTHS_BACK}"
+export RARR_STRUCTURAL_TEMPORAL_FALLBACK_TO_1HOP="${STRUCTURAL_TEMPORAL_FALLBACK_TO_1HOP}"
 export RARR_STRUCTURAL_HOOK_TIMEOUT="${STRUCTURAL_HOOK_TIMEOUT}"
 export RARR_STRUCTURAL_CACHE_FILE="${STRUCTURAL_CACHE_FILE}"
 
 echo "[INFO] DATASET=${DATASET}"
+echo "[INFO] PIPELINE=${PIPELINE}"
 echo "[INFO] HF selector=${HF_DATASET}/${HF_CONFIG}:${HF_SPLIT}"
 echo "[INFO] CONDITION=${RARR_CONDITION}"
 echo "[INFO] MODEL=${RARR_MODEL}"
+echo "[INFO] FACTTOOL_MODEL=${FACTTOOL_MODEL}"
 echo "[INFO] MAX_ROWS=${MAX_ROWS:-all}"
 
 declare -a RUN_ARGS=()
@@ -80,6 +91,10 @@ fi
 if [[ -n "${RARR_MODEL}" ]]; then
   EXTRA_ARGS+=(--rarr-model "${RARR_MODEL}")
 fi
+if [[ -n "${FACTTOOL_MODEL}" ]]; then
+  EXTRA_ARGS+=(--facttool-model "${FACTTOOL_MODEL}")
+fi
+EXTRA_ARGS+=(--pipeline "${PIPELINE}")
 
 if [[ "${DATASET,,}" == "climatecheck" ]]; then
   RUN_ARGS=(

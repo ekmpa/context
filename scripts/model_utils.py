@@ -2,6 +2,7 @@ from __future__ import annotations
 
 MODEL_BACKEND_PREFIX_MAP: dict[str, tuple[str, ...]] = {
     "hf-local": ("qwen", "llama"),
+    "gemini": ("gemini",),
     "openai": ("gpt", "o1", "o3", "o4", "text-"),
 }
 

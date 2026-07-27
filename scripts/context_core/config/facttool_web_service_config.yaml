@@ -1,0 +1,21 @@
+global_config:
+  openai_key:
+    value: XXX
+    env_name: OPENAI_API_KEY
+  llm_in_use: gpt-4o-mini
+  num_retries: 3
+solvers:
+  facttool_decontextualizer:
+    input_name: response
+    output_name: claims
+  facttool_evidence_retriever:
+    input_name: claims
+    output_name: claims_with_evidences
+    max_search_results_per_query: 5
+    max_sentences_per_passage: 4
+    sliding_distance: 1
+    max_passages_per_search_result: 1
+  facttool_claim_examiner:
+    input_name: claims_with_evidences
+    output_name: label
+    max_evidences_per_claim: 5

@@ -166,7 +166,7 @@ def _python_path_setup() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="RARR reproduction, on local CSV/JSONL or Hugging Face datasets."
+        description="Run local fact-checking pipelines (RARR or FactTool-style) on local/HF datasets."
     )
     parser.add_argument("dataset_path", nargs="?", help="Path to local dataset (.csv or .jsonl)")
     parser.add_argument("run_id", nargs="?", help="Run ID (default: timestamp-based)")
@@ -177,6 +177,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Max rows to evaluate (named flag, preferred for scripting)",
+    )
+
+    parser.add_argument(
+        "--pipeline",
+        choices=["rarr", "facttool"],
+        default=os.getenv("FACTCHECK_PIPELINE", "rarr"),
+        help="Which solver pipeline to run.",
     )
 
     parser.add_argument(
@@ -230,6 +237,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--factcheck-model", default="", help="Override the claim-processing model")
     parser.add_argument("--rarr-model", default="", help="Override the retriever/verifier model")
+    parser.add_argument("--facttool-model", default="", help="Override the FactTool pipeline model")
     parser.add_argument(
         "--num-rounds-qgen",
         type=int,
@@ -264,9 +272,14 @@ def _validate_runtime(args: argparse.Namespace) -> None:
     if backend == "openai":
         if not os.getenv("OPENAI_API_KEY"):
             raise RuntimeError("Set OPENAI_API_KEY to use the OpenAI backend")
+    elif backend == "gemini":
+        if not (os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_AIS_API_KEY")):
+            raise RuntimeError(
+                "Set GOOGLE_API_KEY (or GOOGLE_AIS_API_KEY) to use the Gemini backend"
+            )
     elif backend not in {"hf-local", "hf_local", "local"}:
         raise RuntimeError(
-            f"Unsupported CONTEXT_LLM_BACKEND={backend}. Use 'openai' or 'hf-local'."
+            f"Unsupported CONTEXT_LLM_BACKEND={backend}. Use 'openai', 'gemini', or 'hf-local'."
         )
 
     provider = os.getenv("RARR_SEARCH_PROVIDER", "auto").strip().lower()
@@ -283,7 +296,7 @@ def _validate_runtime(args: argparse.Namespace) -> None:
     condition = _resolve_condition(args)
 
     if condition == "structural":
-        shards_dir = Path(args.structural_shards_dir)
+        shards_dir = Path(os.path.expandvars(args.structural_shards_dir)).expanduser()
         if not shards_dir.is_dir():
             raise RuntimeError(
                 f"Structural mode needs a serving shards directory, but none was found at {shards_dir}"
@@ -310,12 +323,19 @@ def _infer_backend_from_model(model_name: str) -> str:
 
 
 def _configure_backend_environment(args: argparse.Namespace) -> str:
-    # rarr_model can come from CLI, env, or fall back to default config behavior.
-    chosen_model = (
-        (args.rarr_model or "").strip()
-        or os.getenv("RARR_MODEL", "").strip()
-        or "gpt-3.5-turbo-instruct"
-    )
+    pipeline = _resolve_pipeline(args)
+    if pipeline == "facttool":
+        chosen_model = (
+            (args.facttool_model or "").strip()
+            or os.getenv("FACTTOOL_MODEL", "").strip()
+            or "gpt-4o-mini"
+        )
+    else:
+        chosen_model = (
+            (args.rarr_model or "").strip()
+            or os.getenv("RARR_MODEL", "").strip()
+            or "gpt-3.5-turbo-instruct"
+        )
     inferred_backend = _infer_backend_from_model(chosen_model)
     os.environ["CONTEXT_LLM_BACKEND"] = inferred_backend
     return inferred_backend
@@ -323,6 +343,10 @@ def _configure_backend_environment(args: argparse.Namespace) -> str:
 
 def _resolve_condition(args: argparse.Namespace) -> str:
     return getattr(args, "condition", "raw")
+
+
+def _resolve_pipeline(args: argparse.Namespace) -> str:
+    return getattr(args, "pipeline", "rarr")
 
 
 def _configure_condition_environment(args: argparse.Namespace) -> str:
@@ -767,12 +791,14 @@ def _load_model_config(config_path: Path) -> dict:
 
 def _prepare_solver_config(
     *,
+    pipeline: str,
     base_config_path: Path,
     output_dir: Path,
     num_rounds_qgen: int,
     max_evidences_per_question: int,
     factcheck_model: str = "",
     rarr_model: str = "",
+    facttool_model: str = "",
 ) -> Path:
     try:
         import yaml
@@ -782,18 +808,33 @@ def _prepare_solver_config(
     payload = _load_model_config(base_config_path)
     global_config = payload.setdefault("global_config", {})
     solvers = payload.setdefault("solvers", {})
-    retriever = solvers.setdefault("rarr_retriever", {})
-    verifier = solvers.setdefault("rarr_verifier", {})
+    if pipeline == "facttool":
+        model_name = (
+            (facttool_model or "").strip()
+            or (rarr_model or "").strip()
+            or os.getenv("FACTTOOL_MODEL", "").strip()
+            or os.getenv("RARR_MODEL", "").strip()
+        )
+        if model_name:
+            global_config["llm_in_use"] = model_name
 
-    # Respect explicit CLI/env model overrides in the resolved config so both
-    # runtime behavior and model reporting reflect the model actually used.
-    if (factcheck_model or "").strip():
-        global_config["factcheck_gpt_model"] = factcheck_model.strip()
-    if (rarr_model or "").strip():
-        global_config["rarr_model"] = rarr_model.strip()
+        retriever = solvers.setdefault("facttool_evidence_retriever", {})
+        examiner = solvers.setdefault("facttool_claim_examiner", {})
+        retriever["num_rounds_qgen"] = max(1, int(num_rounds_qgen))
+        examiner["max_evidences_per_claim"] = max(1, int(max_evidences_per_question))
+    else:
+        retriever = solvers.setdefault("rarr_retriever", {})
+        verifier = solvers.setdefault("rarr_verifier", {})
 
-    retriever["num_rounds_qgen"] = max(1, int(num_rounds_qgen))
-    verifier["max_evidences_per_question"] = max(1, int(max_evidences_per_question))
+        # Respect explicit CLI/env model overrides in the resolved config so both
+        # runtime behavior and model reporting reflect the model actually used.
+        if (factcheck_model or "").strip():
+            global_config["factcheck_gpt_model"] = factcheck_model.strip()
+        if (rarr_model or "").strip():
+            global_config["rarr_model"] = rarr_model.strip()
+
+        retriever["num_rounds_qgen"] = max(1, int(num_rounds_qgen))
+        verifier["max_evidences_per_question"] = max(1, int(max_evidences_per_question))
 
     resolved_path = output_dir / "solver_config.resolved.yaml"
     with open(resolved_path, "w", encoding="utf-8") as handle:
@@ -806,10 +847,14 @@ def _model_report_identity(config_path: Path) -> tuple[str, dict]:
     global_config = config.get("global_config", {}) if isinstance(config, dict) else {}
     factcheck_model = str(global_config.get("factcheck_gpt_model", "unknown"))
     rarr_model = str(global_config.get("rarr_model", "unknown"))
-    model_id = _slugify(f"factcheck-{factcheck_model}__rarr-{rarr_model}")
+    facttool_model = str(global_config.get("llm_in_use", "unknown"))
+    model_id = _slugify(
+        f"factcheck-{factcheck_model}__rarr-{rarr_model}__facttool-{facttool_model}"
+    )
     return model_id, {
         "factcheck_gpt_model": factcheck_model,
         "rarr_model": rarr_model,
+        "facttool_model": facttool_model,
         "config_path": str(config_path),
     }
 
@@ -1104,6 +1149,7 @@ def _upsert_performance_log(meta: dict) -> None:
         "structural_hops": meta.get("structural_hops"),
         "rarr_model": model_info.get("rarr_model", "unknown"),
         "factcheck_gpt_model": model_info.get("factcheck_gpt_model", "unknown"),
+        "facttool_model": model_info.get("facttool_model", "unknown"),
         "model_id": meta.get("model_id"),
         "rows_total": meta.get("rows_total"),
         "rows_scored": meta.get("rows_scored"),
@@ -1130,10 +1176,11 @@ def _upsert_performance_log(meta: dict) -> None:
     print(f"Performance log {action}: {PERFORMANCE_LOG}  ({len(existing)} total runs)")
 
 
-def _default_run_id(hf_dataset: str) -> str:
+def _default_run_id(hf_dataset: str, pipeline: str) -> str:
     # Include microseconds to avoid collisions when many jobs start in the same second.
     now = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    return ("rarr-hf-" if hf_dataset else "rarr-dataset-") + now
+    prefix = f"{pipeline}-hf-" if hf_dataset else f"{pipeline}-dataset-"
+    return prefix + now
 
 
 def _normalize_origin_value(value: object) -> str:
@@ -1224,6 +1271,7 @@ def _print_first_sample_sanity(entries: list[dict], labels: list[str] | None) ->
 
 
 def run(args: argparse.Namespace) -> None:
+    resolved_pipeline = _resolve_pipeline(args)
     inferred_backend = _configure_backend_environment(args)
     resolved_condition = _configure_condition_environment(args)
     resolved_num_rounds_qgen, resolved_max_evidences = _resolve_runtime_hyperparameters(
@@ -1248,7 +1296,7 @@ def run(args: argparse.Namespace) -> None:
     if not args.hf_dataset and not args.dataset_path:
         raise ValueError("Provide a dataset path unless you are using --hf-dataset")
 
-    run_id = args.run_id or _default_run_id(args.hf_dataset)
+    run_id = args.run_id or _default_run_id(args.hf_dataset, resolved_pipeline)
     max_rows = args.max_rows if args.max_rows is not None else _parse_optional_max_rows(args.max_rows_flag)
     max_rows_display = "all" if max_rows is None else str(int(max_rows))
     seed_text = os.getenv("RARR_SEED", "").strip()
@@ -1267,6 +1315,7 @@ def run(args: argparse.Namespace) -> None:
 
     print(
         "Run settings: "
+        f"pipeline={resolved_pipeline}, "
         f"condition={resolved_condition}, "
         f"backend={inferred_backend}, "
         f"max_rows={max_rows_display}, "
@@ -1446,14 +1495,20 @@ def run(args: argparse.Namespace) -> None:
 
     search_utils.reset_search_stats()
 
-    base_config_path = (LOCAL_CORE_DIR / "config" / "rarr_web_service_config.yaml").resolve()
+    if resolved_pipeline == "facttool":
+        base_config_path = (LOCAL_CORE_DIR / "config" / "facttool_web_service_config.yaml").resolve()
+    else:
+        base_config_path = (LOCAL_CORE_DIR / "config" / "rarr_web_service_config.yaml").resolve()
+
     resolved_solver_config = _prepare_solver_config(
+        pipeline=resolved_pipeline,
         base_config_path=base_config_path,
         output_dir=output_dir,
         num_rounds_qgen=resolved_num_rounds_qgen,
         max_evidences_per_question=resolved_max_evidences,
         factcheck_model=args.factcheck_model,
         rarr_model=args.rarr_model,
+        facttool_model=args.facttool_model,
     )
 
     solver_args = argparse.Namespace(
@@ -1464,6 +1519,7 @@ def run(args: argparse.Namespace) -> None:
         openai_apikey=os.getenv("OPENAI_API_KEY"),
         factcheck_model=args.factcheck_model,
         rarr_model=args.rarr_model,
+        facttool_model=args.facttool_model,
     )
 
     entries = evaluate_free_text_with_auto_checker(
@@ -1529,8 +1585,13 @@ def run(args: argparse.Namespace) -> None:
         sq_with_ctx = int(ss.get("structural_queries_with_context", 0) or 0)
         se_total = int(ss.get("structural_evidence_total", 0) or 0)
         se_with_ctx = int(ss.get("structural_evidence_with_context", 0) or 0)
+        hook_failures = int(ss.get("structural_hook_failures", 0) or 0)
+        hop_fallbacks = int(ss.get("structural_hop_fallbacks", 0) or 0)
         print(
             f"  structural hops: {meta_payload.get('structural_hops')} | seed: {meta_payload.get('seed')}"
+        )
+        print(
+            f"  structural hook failures: {hook_failures} | hop fallback to 1-hop: {hop_fallbacks}"
         )
         if sq_total > 0:
             print(

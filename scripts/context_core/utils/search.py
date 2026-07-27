@@ -58,6 +58,8 @@ SEARCH_STATS: Dict[str, int] = {
     "structural_evidence_with_context": 0,
     "structural_cache_hits": 0,
     "structural_cache_misses": 0,
+    "structural_hook_failures": 0,
+    "structural_hop_fallbacks": 0,
 }
 THIRD_PARTY_RATINGS: Dict[str, Dict[str, float]] = {}
 THIRD_PARTY_RATINGS_LOADED = False
@@ -269,19 +271,90 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
     if not domain:
         return ""
 
+    hook_mode = os.getenv("RARR_STRUCTURAL_HOOK_MODE", "temporal").strip().lower()
+    if hook_mode not in {"latest", "temporal"}:
+        hook_mode = "temporal"
+
+    configured_hops_raw = os.getenv("RARR_STRUCTURAL_HOPS", "2").strip()
+    try:
+        configured_hops = max(1, int(configured_hops_raw))
+    except Exception:
+        configured_hops = 2
+
     def _cache_key_for(domain_name: str) -> str:
         return "|".join(
             [
                 domain_name,
                 f"mode={hook_mode}",
-                f"hops={os.getenv('RARR_STRUCTURAL_HOPS', '2').strip()}",
+                f"hops={configured_hops}",
                 f"max_domains_per_hop={os.getenv('RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP', '10').strip()}",
                 f"months_back={os.getenv('RARR_STRUCTURAL_MONTHS_BACK', '3').strip()}",
                 f"max_neighbors={os.getenv('RARR_STRUCTURAL_MAX_NEIGHBORS', '8').strip()}",
             ]
         )
 
-    _load_structural_cache_file()
+    def _payload_has_neighbors(payload: Any) -> bool:
+        if isinstance(payload, list):
+            return any(isinstance(item, str) and item.strip() for item in payload)
+        if isinstance(payload, dict):
+            for neighbors in payload.values():
+                if isinstance(neighbors, list) and any(
+                    isinstance(item, str) and item.strip() for item in neighbors
+                ):
+                    return True
+        return False
+
+    def _parse_hook_json(raw: str) -> Any:
+        try:
+            return json.loads(raw)
+        except Exception:
+            start_candidates = [idx for idx in (raw.find("{"), raw.find("[")) if idx >= 0]
+            if not start_candidates:
+                raise
+            start = min(start_candidates)
+            end = max(raw.rfind("}"), raw.rfind("]"))
+            if end < start:
+                raise
+            return json.loads(raw[start : end + 1])
+
+    def _safe_int_env(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)).strip())
+        except Exception:
+            return default
+
+    def _min_hook_timeout_seconds(mode: str, hops: int) -> float:
+        # Graph hook calls over serving shards can take much longer than web search,
+        # especially for temporal multi-hop lookups. Apply a conservative floor.
+        configured_floor = os.getenv("RARR_STRUCTURAL_HOOK_MIN_TIMEOUT", "").strip()
+        if configured_floor:
+            try:
+                return max(1.0, float(configured_floor))
+            except Exception:
+                pass
+
+        months_back = max(1, _safe_int_env("RARR_STRUCTURAL_MONTHS_BACK", 3))
+        max_domains = max(1, _safe_int_env("RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP", 10))
+        max_neighbors = max(1, _safe_int_env("RARR_STRUCTURAL_MAX_NEIGHBORS", 8))
+
+        if mode == "temporal":
+            floor = 60.0
+            if hops > 1:
+                floor = 120.0
+            if months_back >= 4:
+                floor += 20.0
+            if max_domains >= 20:
+                floor += 20.0
+            if max_neighbors >= 16:
+                floor += 20.0
+            return floor
+
+        floor = 25.0
+        if hops > 1:
+            floor = 45.0
+        if max_domains >= 20:
+            floor += 10.0
+        return floor
 
     hook_path = os.getenv("RARR_STRUCTURAL_HOOK_PATH", "").strip()
     if not hook_path:
@@ -289,17 +362,13 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
     if not os.path.isfile(hook_path):
         return ""
 
-    hook_mode = os.getenv("RARR_STRUCTURAL_HOOK_MODE", "temporal").strip().lower()
-    if hook_mode not in {"latest", "temporal"}:
-        hook_mode = "temporal"
-
+    _load_structural_cache_file()
     cache_key = _cache_key_for(domain)
     _refresh_structural_cache_updates()
     with STRUCTURAL_CACHE_LOCK:
         if cache_key in STRUCTURAL_CACHE:
             _record_search_stat("structural_cache_hits")
             return STRUCTURAL_CACHE[cache_key]
-        # Backward compatibility for older cache files keyed only by domain.
         if domain in STRUCTURAL_CACHE:
             _record_search_stat("structural_cache_hits")
             cached = STRUCTURAL_CACHE[domain]
@@ -315,8 +384,15 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
             hook_timeout = float(os.getenv("RARR_STRUCTURAL_HOOK_TIMEOUT", "20"))
         except Exception:
             hook_timeout = 20.0
+    hook_timeout = max(hook_timeout, _min_hook_timeout_seconds(hook_mode, configured_hops))
 
-    def _run_hook(mode: str, timeout_s: float) -> Any:
+    def _run_hook(mode: str, timeout_s: float, hops: int) -> Any:
+        temporal_fallback_raw = os.getenv(
+            "RARR_STRUCTURAL_TEMPORAL_FALLBACK_TO_1HOP",
+            "1",
+        ).strip().lower()
+        temporal_fallback_enabled = temporal_fallback_raw not in {"0", "false", "no", "off"}
+
         cmd = [
             sys.executable,
             hook_path,
@@ -324,11 +400,10 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
             "--mode",
             mode,
             "--hops",
-            os.getenv("RARR_STRUCTURAL_HOPS", "2"),
+            str(hops),
             "--max-domains-per-hop",
             os.getenv("RARR_STRUCTURAL_MAX_DOMAINS_PER_HOP", "10"),
         ]
-
         if mode == "temporal":
             cmd.extend(
                 [
@@ -338,6 +413,10 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
                     os.getenv("RARR_STRUCTURAL_MAX_NEIGHBORS", "8"),
                 ]
             )
+            if temporal_fallback_enabled:
+                cmd.append("--temporal-fallback-to-1hop")
+            else:
+                cmd.append("--no-temporal-fallback-to-1hop")
 
         shards_dir = os.getenv("RARR_STRUCTURAL_SHARDS_DIR", "").strip()
         if shards_dir:
@@ -349,37 +428,56 @@ def _lookup_structural_context(domain: str, timeout: float | None = None) -> str
             text=True,
             timeout=timeout_s,
         )
+        return _parse_hook_json(raw)
 
-        return json.loads(raw)
-
+    payload = None
+    used_hop_fallback = False
     try:
-        payload = _run_hook(hook_mode, hook_timeout)
+        payload = _run_hook(hook_mode, hook_timeout, configured_hops)
     except Exception:
-        payload = None
+        _record_search_stat("structural_hook_failures")
+
+    if configured_hops > 1 and (payload is None or not _payload_has_neighbors(payload)):
+        try:
+            payload = _run_hook(hook_mode, hook_timeout, 1)
+            used_hop_fallback = True
+            _record_search_stat("structural_hop_fallbacks")
+        except Exception:
+            _record_search_stat("structural_hook_failures")
 
     if payload is None and hook_mode == "latest":
         fallback_timeout = hook_timeout
         try:
-            fallback_timeout = float(
-                os.getenv("RARR_STRUCTURAL_HOOK_FALLBACK_TIMEOUT", "30")
-            )
+            fallback_timeout = float(os.getenv("RARR_STRUCTURAL_HOOK_FALLBACK_TIMEOUT", "30"))
         except Exception:
             fallback_timeout = hook_timeout
+        fallback_timeout = max(fallback_timeout, _min_hook_timeout_seconds("temporal", configured_hops))
+
         try:
-            payload = _run_hook("temporal", fallback_timeout)
+            payload = _run_hook("temporal", fallback_timeout, configured_hops)
         except Exception:
-            payload = None
+            _record_search_stat("structural_hook_failures")
 
-    if payload is not None:
-        summary = _format_structural_context(domain, payload)
-        with STRUCTURAL_CACHE_LOCK:
-            STRUCTURAL_CACHE[cache_key] = summary
-            STRUCTURAL_CACHE_DIRTY = True
-            STRUCTURAL_CACHE_PENDING_WRITES += 1
-        _append_structural_cache_update(cache_key, summary)
-        return summary
+        if configured_hops > 1 and (payload is None or not _payload_has_neighbors(payload)):
+            try:
+                payload = _run_hook("temporal", fallback_timeout, 1)
+                used_hop_fallback = True
+                _record_search_stat("structural_hop_fallbacks")
+            except Exception:
+                _record_search_stat("structural_hook_failures")
 
-    return ""
+    if payload is None:
+        return ""
+
+    summary = _format_structural_context(domain, payload)
+    if used_hop_fallback:
+        summary = f"{summary} fallback_used=1hop."
+    with STRUCTURAL_CACHE_LOCK:
+        STRUCTURAL_CACHE[cache_key] = summary
+        STRUCTURAL_CACHE_DIRTY = True
+        STRUCTURAL_CACHE_PENDING_WRITES += 1
+    _append_structural_cache_update(cache_key, summary)
+    return summary
 
 
 def _get_structural_cache_file() -> str:

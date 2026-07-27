@@ -104,6 +104,8 @@ def evaluate_free_text_with_auto_checker(
         hot_reload["global_config"]["factcheck_gpt_model"] = args.factcheck_model
     if getattr(args, "rarr_model", None):
         hot_reload["global_config"]["rarr_model"] = args.rarr_model
+    if getattr(args, "facttool_model", None):
+        hot_reload["global_config"]["llm_in_use"] = args.facttool_model
 
     def _build_pipeline():
         pipeline = Pipeline(args)

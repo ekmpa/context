@@ -7,7 +7,7 @@ from typing import Iterable
 import openai
 from openai import OpenAI
 
-from llm_utils import query_qwen, query_qwen_batch
+from llm_utils import query_gemini, query_qwen, query_qwen_batch
 
 _CLIENT = None
 _CHAT_CAPABILITIES: dict[str, dict[str, bool]] = {}
@@ -19,6 +19,10 @@ def _backend() -> str:
 
 def _is_hf_local_backend() -> bool:
     return _backend() in {"hf-local", "hf_local", "local"}
+
+
+def _is_gemini_backend() -> bool:
+    return _backend() in {"gemini"}
 
 
 def _coerce_chat_histories(user_inputs):
@@ -205,6 +209,12 @@ def chat_text(
         prompt = _messages_to_text(merged)
         return query_qwen(model.strip(), prompt)
 
+    if _is_gemini_backend():
+        chat_histories = _coerce_chat_histories(user_inputs)
+        merged = [{"role": "system", "content": system_role}] + chat_histories
+        prompt = _messages_to_text(merged)
+        return query_gemini(model.strip(), prompt)
+
     consecutive_rate_limits = 0
     for attempt in range(1, num_retries + 1):
         try:
@@ -299,6 +309,18 @@ def completion_text(
 ) -> str:
     if _is_hf_local_backend():
         text = query_qwen(model.strip(), prompt)
+        if stop:
+            cutoff = None
+            for marker in stop:
+                idx = text.find(marker)
+                if idx >= 0:
+                    cutoff = idx if cutoff is None else min(cutoff, idx)
+            if cutoff is not None:
+                text = text[:cutoff]
+        return text
+
+    if _is_gemini_backend():
+        text = query_gemini(model.strip(), prompt)
         if stop:
             cutoff = None
             for marker in stop:

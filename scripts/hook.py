@@ -718,35 +718,98 @@ def _query_temporal_neighbors(
     serving_shards_dir: str | Path | None,
     shard_count: int,
     month_map: Mapping[str, str | Path],
+    hops: int,
+    max_domains_per_hop: int,
     src_col: str,
     dst_col: str,
     csv_delimiter: str,
     csv_has_header: bool,
     months_back: int = 0,
     max_neighbors_per_month: int = 0,
+    temporal_fallback_to_one_hop: bool = True,
 ) -> dict[str, dict[str, list[str]]]:
     month_plan = list(MONTHS)
     if months_back > 0:
         month_plan = list(MONTHS[-months_back:])
 
-    if serving_shards_dir:
-        return _batch_one_hop_neighbors_by_month_from_serving_shards(
-            domains,
-            serving_shards_dir=serving_shards_dir,
-            shard_count=shard_count,
+    input_domains = sorted({d.strip().lower() for d in domains if d.strip()})
+    if not input_domains:
+        raise ValueError("domains must contain at least one non-empty domain")
+
+    def _one_hop_monthly(seed_domains: list[str], *, per_month_cap: int) -> dict[str, dict[str, list[str]]]:
+        if serving_shards_dir:
+            return _batch_one_hop_neighbors_by_month_from_serving_shards(
+                seed_domains,
+                serving_shards_dir=serving_shards_dir,
+                shard_count=shard_count,
+                months=month_plan,
+                max_neighbors_per_month=per_month_cap,
+            )
+        return batch_one_hop_neighbors_by_month(
+            seed_domains,
+            month_map,
+            src_col=src_col,
+            dst_col=dst_col,
+            csv_delimiter=csv_delimiter,
+            csv_has_header=csv_has_header,
             months=month_plan,
-            max_neighbors_per_month=max_neighbors_per_month,
+            max_neighbors_per_month=per_month_cap,
         )
-    return batch_one_hop_neighbors_by_month(
-        domains,
-        month_map,
-        src_col=src_col,
-        dst_col=dst_col,
-        csv_delimiter=csv_delimiter,
-        csv_has_header=csv_has_header,
-        months=month_plan,
-        max_neighbors_per_month=max_neighbors_per_month,
+
+    one_hop = _one_hop_monthly(input_domains, per_month_cap=max_neighbors_per_month)
+    if hops <= 1:
+        return one_hop
+
+    result: dict[str, dict[str, list[str]]] = {
+        domain: {month: [] for month in month_plan}
+        for domain in input_domains
+    }
+
+    frontier_by_domain_month: dict[str, dict[str, list[str]]] = {
+        domain: {
+            month: list(one_hop.get(domain, {}).get(month, []))[:max_domains_per_hop]
+            for month in month_plan
+        }
+        for domain in input_domains
+    }
+
+    expand_domains = sorted(
+        {
+            neighbor
+            for domain in input_domains
+            for month in month_plan
+            for neighbor in frontier_by_domain_month[domain][month]
+        }
     )
+
+    if not expand_domains:
+        return one_hop if temporal_fallback_to_one_hop else result
+
+    try:
+        hop_neighbor_map = _one_hop_monthly(expand_domains, per_month_cap=max_domains_per_hop)
+    except Exception:
+        if temporal_fallback_to_one_hop:
+            return one_hop
+        raise
+
+    for domain in input_domains:
+        variants = set(_domain_variants(domain))
+        for month in month_plan:
+            combined: set[str] = set()
+            if temporal_fallback_to_one_hop:
+                combined.update(one_hop.get(domain, {}).get(month, []))
+
+            for frontier_neighbor in frontier_by_domain_month[domain][month]:
+                second_hop = hop_neighbor_map.get(frontier_neighbor, {}).get(month, [])
+                combined.update(second_hop[:max_domains_per_hop])
+
+            combined -= variants
+            ordered = sorted(combined)
+            if max_neighbors_per_month > 0:
+                ordered = ordered[:max_neighbors_per_month]
+            result[domain][month] = ordered
+
+    return result
 
 def _query_latest_neighbors(
     domains: list[str],
@@ -1048,6 +1111,22 @@ def main() -> None:
         help="For temporal mode, cap neighbors kept per month (0 means no cap)",
     )
     parser.add_argument(
+        "--temporal-fallback-to-1hop",
+        dest="temporal_fallback_to_1hop",
+        action="store_true",
+        default=True,
+        help=(
+            "In temporal mode with hops>1, include/fall back to one-hop neighbors "
+            "when expansion is sparse"
+        ),
+    )
+    parser.add_argument(
+        "--no-temporal-fallback-to-1hop",
+        dest="temporal_fallback_to_1hop",
+        action="store_false",
+        help="Disable one-hop fallback in temporal multi-hop mode",
+    )
+    parser.add_argument(
         "--credibench",
         action="store_true",
         help="Read monthly edges directly from the CrediBench dataset on Hugging Face",
@@ -1138,12 +1217,15 @@ def main() -> None:
                 serving_shards_dir=args.serving_shards_dir,
                 shard_count=shard_count,
                 month_map=month_map,
+                hops=args.hops,
+                max_domains_per_hop=args.max_domains_per_hop,
                 src_col=args.src_col,
                 dst_col=args.dst_col,
                 csv_delimiter=args.csv_delimiter,
                 csv_has_header=not args.csv_no_header,
                 months_back=args.temporal_months_back,
                 max_neighbors_per_month=args.max_neighbors_per_month,
+                temporal_fallback_to_one_hop=args.temporal_fallback_to_1hop,
             )
         else:
             result = _query_latest_neighbors(
@@ -1176,12 +1258,15 @@ def main() -> None:
             serving_shards_dir=args.serving_shards_dir,
             shard_count=shard_count,
             month_map=month_map,
+            hops=args.hops,
+            max_domains_per_hop=args.max_domains_per_hop,
             src_col=args.src_col,
             dst_col=args.dst_col,
             csv_delimiter=args.csv_delimiter,
             csv_has_header=not args.csv_no_header,
             months_back=args.temporal_months_back,
             max_neighbors_per_month=args.max_neighbors_per_month,
+            temporal_fallback_to_one_hop=args.temporal_fallback_to_1hop,
         )[query_domain]
     else:
         result = _query_latest_neighbors(
