@@ -25,6 +25,7 @@
   --accent: #8F6A14;      /* ochre from the web-graph nodes in Fig. 1 */
   --accent-soft: #F3EAD3;
   --link: #2F55A8;        /* the figure's question-box blue */
+  --q-bg: #E6EDF9;
   --s-unverif: #3E63B8;
   --s-ambig: #C8952A;
   --s-opinion: #A3478F;
@@ -39,7 +40,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #11151C; --surface: #181E27; --ink: #E6EAF0; --ink-2: #B3BCCA; --muted: #8893A4; --rule: #2A3240;
-    --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA;
+    --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA; --q-bg: #1A2640;
     --s-unverif: #6F8DD6; --s-ambig: #BA8C2C; --s-opinion: #BE6BAE;
     --v-true-bg: #173220; --v-true-fg: #93D79A; --v-true-bd: #2F6A3B;
     --v-false-bg: #3A1818; --v-false-fg: #F2A3A3; --v-false-bd: #7A3030;
@@ -50,7 +51,7 @@
 }
 :root[data-theme="dark"] {
   --bg: #11151C; --surface: #181E27; --ink: #E6EAF0; --ink-2: #B3BCCA; --muted: #8893A4; --rule: #2A3240;
-  --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA;
+  --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA; --q-bg: #1A2640;
   --s-unverif: #6F8DD6; --s-ambig: #BA8C2C; --s-opinion: #BE6BAE;
   --v-true-bg: #173220; --v-true-fg: #93D79A; --v-true-bd: #2F6A3B;
   --v-false-bg: #3A1818; --v-false-fg: #F2A3A3; --v-false-bd: #7A3030;
@@ -298,6 +299,47 @@ footer { padding-top: 2.5rem; font-size: .82rem; color: var(--muted); }
 html { scroll-behavior: smooth; }
 section[id] { scroll-margin-top: 1.5rem; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .sidetoc a { transition: none; } }
+
+/* Figure 1 drawn in the page's own tokens */
+.fig-svg { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: clamp(.75rem, 2vw, 1.5rem) clamp(.5rem, 1.5vw, 1rem); overflow-x: auto; }
+.fig-narrow:has(.fig-svg) { max-width: 860px; }
+.f1 { display: block; width: 100%; min-width: 620px; height: auto; }
+.f1 text { font-family: var(--f-body); font-size: 14px; fill: var(--ink-2); }
+.f1 .f1-txt { font-size: 14px; fill: var(--ink-2); }
+.f1 .f1-b { font-weight: 600; fill: var(--ink); }
+.f1 .f1-dot { fill: var(--accent); }
+.f1 .f1-head { font: 500 12px var(--f-mono); letter-spacing: .12em; fill: var(--ink); }
+.f1 .f1-paren { font-family: var(--f-display); font-style: italic; font-size: 15px; fill: var(--muted); }
+.f1 .f1-label { font: 500 11px var(--f-mono); letter-spacing: .12em; fill: var(--muted); }
+.f1 .f1-www { font-family: var(--f-mono); font-style: italic; font-size: 13px; fill: var(--accent); }
+.f1-line { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.f1-arrowhead { fill: var(--muted); }
+.f1-panel { fill: var(--bg); stroke: var(--rule); stroke-width: 1.5; }
+.f1-sys { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.f1 .f1-sys-t { font-family: var(--f-display); font-size: 16.5px; font-weight: 500; fill: var(--ink); }
+.f1-q { fill: var(--q-bg); stroke: var(--link); stroke-width: 1.5; }
+.f1 .f1-q-t { font: 500 12.5px var(--f-mono); letter-spacing: .08em; fill: var(--link); }
+.f1-user { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.f1-user-ic { fill: var(--rule); stroke: var(--muted); stroke-width: 1.4; }
+.f1-yes { fill: var(--v-true-bg); stroke: var(--v-true-bd); stroke-width: 1.5; }
+.f1-yes-ic { fill: none; stroke: var(--v-true-fg); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.f1-no { fill: var(--v-false-bg); stroke: var(--v-false-bd); stroke-width: 1.5; }
+.f1-no-ic { fill: none; stroke: var(--v-false-fg); stroke-width: 3; stroke-linecap: round; }
+.f1-assess { fill: var(--surface); stroke: var(--ink); stroke-width: 1.8; }
+.f1 .f1-assess-t { font-family: var(--f-display); font-size: 21px; font-weight: 600; fill: var(--ink); }
+.f1-chips text { font: 600 11px var(--f-body); letter-spacing: .08em; }
+.f1 .c-unv { fill: var(--v-unv-bg); stroke: var(--v-unv-bd); } .f1 .t-unv { fill: var(--v-unv-fg); }
+.f1 .c-true { fill: var(--v-true-bg); stroke: var(--v-true-bd); } .f1 .t-true { fill: var(--v-true-fg); }
+.f1 .c-false { fill: var(--v-false-bg); stroke: var(--v-false-bd); } .f1 .t-false { fill: var(--v-false-fg); }
+.f1 .c-ambig { fill: var(--v-ambig-bg); stroke: var(--v-ambig-bd); } .f1 .t-ambig { fill: var(--v-ambig-fg); }
+.f1-edge { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: .55; }
+.f1-edge-dash { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 3 4; opacity: .5; }
+.f1-node circle { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.f1-node use { fill: none; stroke: var(--accent); stroke-width: 1.3; }
+.f1-node-faint { opacity: .6; }
+.f1-link-curve { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+.f1-doc rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.3; }
+.f1-doc path { fill: none; stroke: var(--accent); stroke-width: 1.2; }
 </style>
 </head>
 <body>
@@ -386,7 +428,110 @@ section[id] { scroll-margin-top: 1.5rem; }
       <p>We develop this position along four arguments. Machine learning methods should account for the temporal nature of verification, which is limited by the evidence available at the moment it happens. Contextual signals are useful for verification broadly, particularly when retrieved evidence supports conflicting judgments, and for detecting varying degrees of verifiability, ambiguity and subjectivity in a claim. We find that such nuanced claims make up considerable proportions of popular benchmarks, and outline considerations for designing and evaluating holistic verification systems.</p>
     </div>
     <figure class="fig-narrow" style="margin-top:2.2rem">
-      <div class="fig-paper"><img src="fig1.png" alt="Diagram of the proposed holistic verification pipeline. A user submits a claim to an information verification system. It first asks whether the claim is verifiable. If not, a justification explains why (temporality, subjectivity, or lack of evidence). If so, it asks whether the claim is factual, using content-centric claim evaluation against evidence, and whether it is reliable, using context-aware reasoning over source attribution, track record, web topology, timing and ambiguity. The assessment returns one of several labels: Unverifiable, True, False, Ambiguous, and more." width="1010" height="550"></div>
+      <div class="fig-svg">
+        <svg class="f1" viewBox="12 64 980 470" role="img" aria-labelledby="f1-title f1-desc">
+          <title id="f1-title">Holistic information verification pipeline</title>
+          <desc id="f1-desc">A user submits a claim to an information verification system, which first asks whether the claim is verifiable. If not, a justification explains why: temporality, subjectivity, or lack of evidence. If it is, the system asks whether the claim is factual, using content-centric claim evaluation against evidence, and whether it is reliable, using context-aware reasoning over source attribution, track record, web topology, timing and ambiguity. Both paths feed an assessment that can be Unverifiable, True, False, Ambiguous, or another label.</desc>
+          <defs>
+            <marker id="f1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 1 9 5 0 9z" class="f1-arrowhead"/>
+            </marker>
+            <symbol id="f1-globe" viewBox="-12 -12 24 24">
+              <circle r="10.5"/>
+              <ellipse rx="4.6" ry="10.5"/>
+              <path d="M-10.5 0h21M-9 -5.2h18M-9 5.2h18"/>
+            </symbol>
+          </defs>
+
+          <!-- web graph -->
+          <g class="f1-web">
+            <path class="f1-edge-dash" d="M84 250 28 222M90 352 26 382"/>
+            <path class="f1-edge" d="M160 236 84 250M160 236 118 302M84 250 118 302M118 302 90 352M84 250 90 352M118 302 130 328"/>
+            <g class="f1-node"><circle cx="160" cy="236" r="21"/><use href="#f1-globe" x="146" y="222" width="28" height="28"/></g>
+            <g class="f1-node"><circle cx="84" cy="250" r="16"/><use href="#f1-globe" x="74" y="240" width="20" height="20"/></g>
+            <g class="f1-node"><circle cx="118" cy="302" r="14"/><use href="#f1-globe" x="109" y="293" width="18" height="18"/></g>
+            <g class="f1-node f1-node-faint"><circle cx="90" cy="352" r="12"/><use href="#f1-globe" x="82.5" y="344.5" width="15" height="15"/></g>
+            <text x="22" y="312" class="f1-www">www</text>
+            <path class="f1-link-curve" d="M180 228 C 196 196, 208 204, 222 214" marker-end="url(#f1-arrow)"/>
+          </g>
+
+          <!-- claim evaluation (content-centric) -->
+          <rect class="f1-panel" x="225" y="176" width="168" height="92" rx="8"/>
+          <text x="309" y="198" text-anchor="middle" class="f1-head">CLAIM EVALUATION</text>
+          <text x="309" y="216" text-anchor="middle" class="f1-paren">content-centric</text>
+          <g class="f1-doc">
+            <rect x="240" y="228" width="20" height="26" rx="2"/>
+            <rect x="245" y="233" width="20" height="26" rx="2"/>
+            <path d="M249 241h12M249 246h12M249 251h8"/>
+          </g>
+          <text x="276" y="242" class="f1-txt">Compare with</text>
+          <text x="276" y="259" class="f1-txt">evidence</text>
+
+          <!-- reasoning (context-aware) -->
+          <rect class="f1-panel" x="132" y="318" width="258" height="166" rx="8"/>
+          <text x="261" y="342" text-anchor="middle" class="f1-head">REASONING</text>
+          <text x="261" y="360" text-anchor="middle" class="f1-paren">context-aware</text>
+          <text class="f1-txt" x="150" y="388"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Source considerations:</tspan></text>
+          <text class="f1-txt" x="162" y="406">attribution, track record,</text>
+          <text class="f1-txt" x="162" y="424">web topology.</text>
+          <text class="f1-txt" x="150" y="446"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Timing</tspan> of claims and events.</text>
+          <text class="f1-txt" x="150" y="468"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Ambiguity</tspan> and other nuances.</text>
+
+          <!-- user -> system -->
+          <circle class="f1-user" cx="440" cy="118" r="46"/>
+          <circle class="f1-user-ic" cx="440" cy="104" r="14"/>
+          <path class="f1-user-ic" d="M414 146c2-16 13-24 26-24s24 8 26 24z"/>
+          <text x="440" y="186" text-anchor="middle" class="f1-label">USER</text>
+          <path class="f1-line" d="M488 118H578" marker-end="url(#f1-arrow)"/>
+          <text x="533" y="108" text-anchor="middle" class="f1-label">CLAIM</text>
+          <rect class="f1-sys" x="582" y="90" width="200" height="56" rx="8"/>
+          <text x="682" y="114" text-anchor="middle" class="f1-sys-t">Information</text>
+          <text x="682" y="133" text-anchor="middle" class="f1-sys-t">Verification System</text>
+
+          <!-- decision row -->
+          <path class="f1-line" d="M682 146V219" marker-end="url(#f1-arrow)"/>
+          <rect class="f1-q" x="612" y="222" width="140" height="40" rx="6"/>
+          <text x="682" y="247" text-anchor="middle" class="f1-q-t">VERIFIABLE?</text>
+
+          <path class="f1-line" d="M612 242H586"/>
+          <circle class="f1-yes" cx="566" cy="242" r="19"/>
+          <path class="f1-yes-ic" d="M557 242l6 6 12-12"/>
+          <path class="f1-line" d="M547 242H529" marker-end="url(#f1-arrow)"/>
+          <rect class="f1-q" x="412" y="222" width="115" height="40" rx="6"/>
+          <text x="469.5" y="247" text-anchor="middle" class="f1-q-t">FACTUAL?</text>
+
+          <path class="f1-line" d="M752 242H778"/>
+          <circle class="f1-no" cx="797" cy="242" r="19"/>
+          <path class="f1-no-ic" d="M789 234l16 16M805 234l-16 16"/>
+          <path class="f1-line" d="M816 242H848V281" marker-end="url(#f1-arrow)"/>
+
+          <!-- justification -->
+          <rect class="f1-panel" x="716" y="284" width="268" height="138" rx="8"/>
+          <text x="734" y="308" class="f1-head">JUSTIFICATION</text>
+          <text class="f1-txt" x="734" y="334"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Temporality:</tspan> an event may not</text>
+          <text class="f1-txt" x="746" y="352">have occurred or be covered yet.</text>
+          <text class="f1-txt" x="734" y="374"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Subjectivity:</tspan> may be an opinion.</text>
+          <text class="f1-txt" x="734" y="396"><tspan class="f1-dot">•</tspan> <tspan class="f1-b">Lack of information</tspan> or evidence.</text>
+
+          <!-- factual -> reliable -> assessment -->
+          <path class="f1-line" d="M469.5 262V353" marker-end="url(#f1-arrow)"/>
+          <rect class="f1-q" x="412" y="356" width="115" height="40" rx="6"/>
+          <text x="469.5" y="381" text-anchor="middle" class="f1-q-t">RELIABLE?</text>
+          <path class="f1-line" d="M469.5 396V484H500" marker-end="url(#f1-arrow)"/>
+          <path class="f1-line" d="M850 422V484H818" marker-end="url(#f1-arrow)"/>
+
+          <!-- assessment -->
+          <rect class="f1-assess" x="503" y="440" width="312" height="86" rx="10"/>
+          <text x="659" y="466" text-anchor="middle" class="f1-assess-t">Assessment</text>
+          <g class="f1-chips">
+            <rect class="c-unv" x="517" y="480" width="72" height="28" rx="5"/><text x="553" y="499" text-anchor="middle" class="t-unv">UNVERIF.</text>
+            <rect class="c-true" x="595" y="480" width="56" height="28" rx="5"/><text x="623" y="499" text-anchor="middle" class="t-true">TRUE</text>
+            <rect class="c-false" x="657" y="480" width="60" height="28" rx="5"/><text x="687" y="499" text-anchor="middle" class="t-false">FALSE</text>
+            <rect class="c-ambig" x="723" y="480" width="64" height="28" rx="5"/><text x="755" y="499" text-anchor="middle" class="t-ambig">AMBIG.</text>
+            <text x="801" y="499" text-anchor="middle" class="f1-txt">…</text>
+          </g>
+        </svg>
+      </div>
       <figcaption><b>Figure 1.</b> The proposed holistic pipeline adds context-aware reasoning over source attribution, track record and temporality to content-centric claim evaluation. The two streams together support more nuanced outcomes than a binary score.</figcaption>
     </figure>
   </section>
