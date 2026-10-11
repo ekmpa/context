@@ -106,6 +106,7 @@ nav.toc a:hover { color: var(--ink); text-decoration: underline; }
 
 section { padding-block: clamp(3.5rem, 2.5rem + 3vw, 5.5rem); }
 section + section { border-top: 1px solid var(--rule); }
+.main > section:first-child { padding-top: 1.5rem; }
 .sec-head { display: grid; gap: .6rem; margin-bottom: 2rem; }
 .prose { display: grid; gap: 1.15rem; color: var(--ink); }
 .prose p { color: var(--ink-2); }
@@ -342,7 +343,6 @@ section[id] { scroll-margin-top: 1.5rem; }
 
 <nav class="toc" aria-label="Sections">
   <ol>
-    <li><a href="#case">Case file</a></li>
     <li><a href="#abstract">Abstract</a></li>
     <li><a href="#signals">Contextual signals</a></li>
     <li><a href="#experts">Human vs. automated</a></li>
@@ -360,7 +360,6 @@ section[id] { scroll-margin-top: 1.5rem; }
     <nav class="sidetoc">
       <span class="side-title">Contents</span>
       <ol>
-        <li><a href="#case">Case file</a></li>
         <li><a href="#abstract">Abstract</a></li>
         <li><a href="#signals">Contextual signals</a></li>
         <li><a href="#experts"><span class="sn">§2</span>Human vs. automated</a></li>
@@ -377,60 +376,6 @@ section[id] { scroll-margin-top: 1.5rem; }
   </aside>
 <main class="main">
 
-  <!-- ===== Case file ===== -->
-  <section id="case" style="padding-top:0">
-    <div class="case" id="pope" data-mode="content">
-      <div class="case-top">
-        <span class="eyebrow">Case file · 2016 · Appendix C</span>
-        <div class="seg" role="group" aria-label="Verification mode">
-          <button type="button" id="pope-content" aria-pressed="true" data-mode="content">Content only</button>
-          <button type="button" id="pope-context" aria-pressed="false" data-mode="context">With context</button>
-        </div>
-      </div>
-      <div class="claim">
-        <span class="eyebrow" style="color:var(--muted)">Claim</span>
-        <q>Pope Francis endorsed Donald Trump for President of the United States.</q>
-        <span class="meta">~1M Facebook engagements before the election</span>
-      </div>
-      <div class="evidence">
-        <div class="ev">
-          <div class="src">WTOE5News <span class="stance sup">Supports</span></div>
-          <p class="txt">“Pope Francis Shocks World, Endorses Donald Trump for President, Releases Statement.” Republished with the same headline on Ending the Fed.</p>
-          <div class="ctx in-ctx">
-            <div>Secondary source: reports a statement it attributes to the Vatican</div>
-            <div>Domain registered about two weeks before the story</div>
-            <div>Its own About page calls it “a fantasy news website”</div>
-          </div>
-        </div>
-        <div class="ev">
-          <div class="src">Pope Francis, press conference <span class="stance ref">Refutes</span></div>
-          <p class="txt">“I never say a word about electoral campaigns.” (2 October 2016)</p>
-          <div class="ctx in-ctx">
-            <div>Direct statement from the person the claim is about</div>
-            <div>Published by established outlets</div>
-          </div>
-        </div>
-        <div class="ev">
-          <div class="src">Vatican Press Office <span class="stance sil">No statement</span></div>
-          <p class="txt">No corresponding endorsement appears in Vatican communications. No reputable outlet reported one.</p>
-          <div class="ctx in-ctx">
-            <div>Primary source for any papal endorsement</div>
-            <div>Silence from the primary source is itself evidence</div>
-          </div>
-        </div>
-      </div>
-      <div class="case-out plain-out">
-        <span class="label">Verdict</span>
-        <span class="chip ambig">Conflicting</span>
-        <p>Matched on content alone, one article supports the claim and another refutes it. Both are fluent and on-topic, so text similarity gives no way to choose between them.</p>
-      </div>
-      <div class="case-out ctx-out">
-        <span class="label">Verdict</span>
-        <span class="chip false">False</span>
-        <p>Two contextual moves settle it. The primary source is the Vatican Press Office, which says nothing. The only outlet reporting the endorsement is a two-week-old domain that describes itself as fantasy news.</p>
-      </div>
-    </div>
-  </section>
 
   <!-- ===== Abstract ===== -->
   <section id="abstract">
@@ -656,7 +601,58 @@ section[id] { scroll-margin-top: 1.5rem; }
         <div class="remedy">
           <span class="eyebrow">Remedy</span>
           <h4>Use context-aware conflict resolution modules</h4>
-          <p>Professional fact-checkers accept that concurrent narratives can exist. Automated systems should handle conflicting evidence in principled ways and express the disagreement or uncertainty, using context to arbitrate. The <a href="#case">Pope case file</a> above shows one such resolution.</p>
+          <p>Professional fact-checkers accept that concurrent narratives can exist. Automated systems should handle conflicting evidence in principled ways and express the disagreement or uncertainty, using context to arbitrate. The Pope case file below shows one such resolution.</p>
+        </div>
+        <div class="case" id="pope" data-mode="content">
+          <div class="case-top">
+            <span class="eyebrow">Case file · 2016 · Appendix C</span>
+            <div class="seg" role="group" aria-label="Verification mode">
+              <button type="button" id="pope-content" aria-pressed="true" data-mode="content">Content only</button>
+              <button type="button" id="pope-context" aria-pressed="false" data-mode="context">With context</button>
+            </div>
+          </div>
+          <div class="claim">
+            <span class="eyebrow" style="color:var(--muted)">Claim</span>
+            <q>Pope Francis endorsed Donald Trump for President of the United States.</q>
+            <span class="meta">~1M Facebook engagements before the election</span>
+          </div>
+          <div class="evidence">
+            <div class="ev">
+              <div class="src">WTOE5News <span class="stance sup">Supports</span></div>
+              <p class="txt">“Pope Francis Shocks World, Endorses Donald Trump for President, Releases Statement.” Republished with the same headline on Ending the Fed.</p>
+              <div class="ctx in-ctx">
+                <div>Secondary source: reports a statement it attributes to the Vatican</div>
+                <div>Domain registered about two weeks before the story</div>
+                <div>Its own About page calls it “a fantasy news website”</div>
+              </div>
+            </div>
+            <div class="ev">
+              <div class="src">Pope Francis, press conference <span class="stance ref">Refutes</span></div>
+              <p class="txt">“I never say a word about electoral campaigns.” (2 October 2016)</p>
+              <div class="ctx in-ctx">
+                <div>Direct statement from the person the claim is about</div>
+                <div>Published by established outlets</div>
+              </div>
+            </div>
+            <div class="ev">
+              <div class="src">Vatican Press Office <span class="stance sil">No statement</span></div>
+              <p class="txt">No corresponding endorsement appears in Vatican communications. No reputable outlet reported one.</p>
+              <div class="ctx in-ctx">
+                <div>Primary source for any papal endorsement</div>
+                <div>Silence from the primary source is itself evidence</div>
+              </div>
+            </div>
+          </div>
+          <div class="case-out plain-out">
+            <span class="label">Verdict</span>
+            <span class="chip ambig">Conflicting</span>
+            <p>Matched on content alone, one article supports the claim and another refutes it. Both are fluent and on-topic, so text similarity gives no way to choose between them.</p>
+          </div>
+          <div class="case-out ctx-out">
+            <span class="label">Verdict</span>
+            <span class="chip false">False</span>
+            <p>Two contextual moves settle it. The primary source is the Vatican Press Office, which says nothing. The only outlet reporting the endorsement is a two-week-old domain that describes itself as fantasy news.</p>
+          </div>
         </div>
       </div>
     </div>
