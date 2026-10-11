@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From Claims to Context</title>
+<meta name="description" content="NeurIPS 2026 position paper: automated fact verification should use contextual signals such as source attribution, web topology and time, not the claim alone.">
+<meta property="og:title" content="From Claims to Context: Holistic Information Verification Requires Contextual Signals">
+<meta property="og:description" content="NeurIPS 2026 Position Paper Track. Kondrup, Eldifrawi, Wu, Yang, Sabry, Bronstein, Godbout, Rabbany, Huang.">
+<meta property="og:image" content="fig1.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23141C2A'/%3E%3Ccircle cx='16' cy='10' r='3.2' fill='%23D9AE52'/%3E%3Ccircle cx='9' cy='22' r='3.2' fill='%23D9AE52'/%3E%3Ccircle cx='23' cy='22' r='3.2' fill='%23D9AE52'/%3E%3Cpath d='M16 10 9 22h14z' fill='none' stroke='%23D9AE52' stroke-width='1.6'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~68ch) with figures and tables breaking out to a wider measure; verdict chips from the paper's Figure 1 act as the recurring motif. */
+:root {
+  --bg: #F6F7F9;
+  --surface: #FFFFFF;
+  --ink: #141C2A;
+  --ink-2: #485366;
+  --muted: #6E7889;
+  --rule: #DADFE7;
+  --accent: #8F6A14;      /* ochre from the web-graph nodes in Fig. 1 */
+  --accent-soft: #F3EAD3;
+  --link: #2F55A8;        /* the figure's question-box blue */
+  --s-unverif: #3E63B8;
+  --s-ambig: #C8952A;
+  --s-opinion: #A3478F;
+  --v-true-bg: #DCEFD9; --v-true-fg: #1E6B22; --v-true-bd: #8BC28A;
+  --v-false-bg: #F8DADA; --v-false-fg: #9B1C1C; --v-false-bd: #E09A9A;
+  --v-ambig-bg: #FBEFC9; --v-ambig-fg: #7A5A0B; --v-ambig-bd: #E2C46A;
+  --v-unv-bg: #ECEEF2; --v-unv-fg: #3D4655; --v-unv-bd: #B5BCC8;
+  --f-display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151C; --surface: #181E27; --ink: #E6EAF0; --ink-2: #B3BCCA; --muted: #8893A4; --rule: #2A3240;
+    --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA;
+    --s-unverif: #6F8DD6; --s-ambig: #BA8C2C; --s-opinion: #BE6BAE;
+    --v-true-bg: #173220; --v-true-fg: #93D79A; --v-true-bd: #2F6A3B;
+    --v-false-bg: #3A1818; --v-false-fg: #F2A3A3; --v-false-bd: #7A3030;
+    --v-ambig-bg: #33290F; --v-ambig-fg: #E8C76E; --v-ambig-bd: #6E5A22;
+    --v-unv-bg: #232A35; --v-unv-fg: #C2C9D4; --v-unv-bd: #465062;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151C; --surface: #181E27; --ink: #E6EAF0; --ink-2: #B3BCCA; --muted: #8893A4; --rule: #2A3240;
+  --accent: #D9AE52; --accent-soft: #2B2412; --link: #8DAAEA;
+  --s-unverif: #6F8DD6; --s-ambig: #BA8C2C; --s-opinion: #BE6BAE;
+  --v-true-bg: #173220; --v-true-fg: #93D79A; --v-true-bd: #2F6A3B;
+  --v-false-bg: #3A1818; --v-false-fg: #F2A3A3; --v-false-bd: #7A3030;
+  --v-ambig-bg: #33290F; --v-ambig-fg: #E8C76E; --v-ambig-bd: #6E5A22;
+  --v-unv-bg: #232A35; --v-unv-fg: #C2C9D4; --v-unv-bd: #465062;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 400 1rem/1.65 var(--f-body);
+  padding-inline: 16px; padding-block: 0 4rem;
+}
+a { color: var(--link); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 4px; }
+.wrap { max-width: 1040px; margin-inline: auto; }
+.col { max-width: 68ch; margin-inline: auto; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 500; text-wrap: balance; color: var(--ink); }
+h2 { font-size: clamp(1.6rem, 1.2rem + 1.4vw, 2.1rem); line-height: 1.15; margin: 0; }
+h3 { font-size: 1.3rem; line-height: 1.25; margin: 0; }
+p { margin: 0; }
+.eyebrow { font: 500 .72rem/1.2 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.mono { font-family: var(--f-mono); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Header ---------- */
+header.hero { padding-block: clamp(2.5rem, 6vw, 4.5rem) 2rem; text-align: left; }
+.venue { display: inline-flex; gap: .6rem; align-items: center; font: 500 .75rem/1 var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); }
+.venue b { color: var(--accent); font-weight: 500; }
+.hero h1 { font-size: clamp(2.2rem, 1.4rem + 3.4vw, 3.9rem); line-height: 1.04; letter-spacing: -.015em; margin: 1rem 0 0; max-width: 18ch; }
+.hero h1 em { font-style: italic; color: var(--accent); }
+.hero .sub { font-family: var(--f-display); font-size: clamp(1.15rem, 1rem + .6vw, 1.45rem); line-height: 1.35; color: var(--ink-2); margin-top: .6rem; max-width: 40ch; }
+.authors { margin-top: 2rem; display: flex; flex-wrap: wrap; gap: .35rem 1.3rem; font-size: 1rem; }
+.authors span { white-space: nowrap; }
+.authors sup { font: 500 .68rem var(--f-mono); color: var(--muted); margin-left: 1px; }
+.affils { margin-top: .7rem; display: flex; flex-wrap: wrap; gap: .2rem 1.1rem; font-size: .85rem; color: var(--muted); }
+.affils sup { font-family: var(--f-mono); }
+.links { margin-top: 1.8rem; display: flex; flex-wrap: wrap; gap: .6rem; }
+.btn { display: inline-flex; align-items: center; gap: .5rem; padding: .55rem 1rem; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); text-decoration: none; font: 500 .9rem var(--f-body); cursor: pointer; transition: border-color .15s, background .15s; }
+.btn:hover { border-color: var(--ink-2); }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+nav.toc { border-block: 1px solid var(--rule); margin-block: 0 3rem; }
+nav.toc ol { list-style: none; margin: 0 auto; padding: .7rem 0; display: flex; flex-wrap: wrap; gap: .3rem 1.4rem; max-width: 1040px; font: 500 .8rem var(--f-mono); }
+nav.toc a { color: var(--ink-2); text-decoration: none; }
+nav.toc a:hover { color: var(--ink); text-decoration: underline; }
+
+section { padding-block: 2.5rem; }
+section + section { border-top: 1px solid var(--rule); }
+.sec-head { display: grid; gap: .5rem; margin-bottom: 1.4rem; }
+.prose { display: grid; gap: 1rem; color: var(--ink); }
+.prose p { color: var(--ink-2); }
+.prose strong { color: var(--ink); font-weight: 600; }
+.lede { font-family: var(--f-display); font-size: 1.28rem; line-height: 1.5; color: var(--ink) !important; }
+
+/* ---------- Verdict chips (Fig. 1 motif) ---------- */
+.chip { display: inline-block; font: 600 .7rem/1 var(--f-body); letter-spacing: .08em; text-transform: uppercase; padding: .35rem .55rem; border-radius: 5px; border: 1px solid; white-space: nowrap; }
+.chip.true { background: var(--v-true-bg); color: var(--v-true-fg); border-color: var(--v-true-bd); }
+.chip.false { background: var(--v-false-bg); color: var(--v-false-fg); border-color: var(--v-false-bd); }
+.chip.ambig { background: var(--v-ambig-bg); color: var(--v-ambig-fg); border-color: var(--v-ambig-bd); }
+.chip.unv { background: var(--v-unv-bg); color: var(--v-unv-fg); border-color: var(--v-unv-bd); }
+.chiprow { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+
+/* ---------- Case file widget ---------- */
+.case { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+.case-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .8rem; padding: .9rem 1.1rem; border-bottom: 1px solid var(--rule); }
+.case-top .eyebrow { color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; padding: 3px; background: var(--bg); }
+.seg button { font: 500 .82rem var(--f-body); border: 0; background: transparent; color: var(--ink-2); padding: .4rem .85rem; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.claim { padding: 1.2rem 1.1rem .4rem; display: grid; gap: .3rem; }
+.claim q { font-family: var(--f-display); font-size: 1.35rem; line-height: 1.3; quotes: "“" "”"; }
+.claim .meta { font: .78rem var(--f-mono); color: var(--muted); }
+.evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .8rem; padding: 1rem 1.1rem; }
+.ev { border: 1px solid var(--rule); border-radius: 8px; padding: .9rem; display: grid; gap: .55rem; align-content: start; min-width: 0; background: var(--bg); }
+.ev .src { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; flex-wrap: wrap; font: 500 .8rem var(--f-mono); color: var(--ink); }
+.ev .txt { font-size: .92rem; color: var(--ink-2); }
+.ev .stance { font: 600 .68rem var(--f-mono); letter-spacing: .1em; text-transform: uppercase; }
+.ev .stance.sup { color: var(--v-true-fg); }
+.ev .stance.ref { color: var(--v-false-fg); }
+.ev .stance.sil { color: var(--muted); }
+.ctx { display: grid; gap: .3rem; padding-top: .55rem; border-top: 1px dashed var(--rule); font-size: .82rem; color: var(--ink-2); }
+.ctx div { display: flex; gap: .45rem; }
+.ctx div::before { content: ""; flex: 0 0 6px; height: 6px; margin-top: .5em; border-radius: 50%; background: var(--accent); }
+.case-out { display: flex; flex-wrap: wrap; gap: .8rem 1.2rem; align-items: center; padding: 1rem 1.1rem 1.2rem; border-top: 1px solid var(--rule); }
+.case-out .label { font: 500 .72rem var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.case-out .chip { font-size: .8rem; padding: .45rem .7rem; }
+.case-out p { flex: 1 1 280px; font-size: .92rem; color: var(--ink-2); min-width: 0; }
+.case .in-ctx { display: none; }
+.case[data-mode="context"] .in-ctx { display: grid; }
+.case[data-mode="context"] .no-ctx { display: none; }
+.case:not([data-mode="context"]) .ctx-out { display: none; }
+.case[data-mode="context"] .plain-out { display: none; }
+.case-note { font-size: .8rem; color: var(--muted); padding: 0 1.1rem 1rem; }
+
+/* ---------- Figures ---------- */
+figure { margin: 0; }
+.fig-paper { background: #FFFFFF; border: 1px solid var(--rule); border-radius: 10px; padding: clamp(.75rem, 2vw, 1.5rem); }
+.fig-paper img { display: block; width: 100%; height: auto; }
+figcaption { font-size: .86rem; color: var(--muted); margin-top: .8rem; max-width: 80ch; }
+figcaption b { color: var(--ink-2); font-weight: 600; }
+
+/* ---------- Signals ---------- */
+.signals { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin-top: 1.6rem; }
+.signal { background: var(--surface); padding: 1.3rem 1.2rem; display: grid; gap: .55rem; align-content: start; min-width: 0; }
+.signal .q { font-family: var(--f-display); font-style: italic; color: var(--ink-2); font-size: 1.02rem; line-height: 1.4; }
+.signal svg { width: 34px; height: 34px; stroke: var(--accent); fill: none; stroke-width: 1.5; }
+.signal .sfill { fill: var(--accent); stroke: none; }
+
+/* ---------- Workflow grid (Fig. 2) ---------- */
+.flow-wrap { overflow-x: auto; margin-top: 1.4rem; }
+.flow { display: grid; grid-template-columns: 9.5rem repeat(4, minmax(9.5rem, 1fr)); min-width: 720px; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--surface); font-size: .86rem; }
+.flow > div { padding: .75rem .85rem; border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); min-width: 0; }
+.flow > div:nth-child(5n+1) { border-left: 0; }
+.flow > div:nth-child(-n+5) { border-top: 0; }
+.flow .stage { font: 600 .8rem var(--f-body); background: var(--ink); color: var(--bg); border-left-color: transparent; }
+.flow .rowlab { font: 500 .68rem/1.3 var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+.flow .lesson { background: var(--accent-soft); }
+.flow .lesson b { display: block; color: var(--ink); font-weight: 600; }
+.flow .lesson i { font-style: normal; font: .7rem var(--f-mono); color: var(--muted); }
+.flow .lesson span { color: var(--ink-2); }
+.flow ul { margin: 0; padding: 0; list-style: none; color: var(--ink-2); }
+
+/* ---------- Arguments ---------- */
+.arg { display: grid; grid-template-columns: 4.2rem minmax(0, 1fr); gap: 0 1.2rem; }
+.arg-num { font: 400 2.6rem/1 var(--f-display); color: var(--accent); padding-top: .15rem; }
+@media (max-width: 560px) { .arg { grid-template-columns: 1fr; } .arg-num { font-size: 1.6rem; margin-bottom: .4rem; } }
+.arg-body { display: grid; gap: 1.2rem; min-width: 0; }
+.remedy { border: 1px solid var(--accent); border-radius: 10px; padding: 1rem 1.2rem; display: grid; gap: .4rem; background: var(--accent-soft); }
+.remedy .eyebrow { color: var(--accent); }
+.remedy h4 { margin: 0; font: 600 1rem var(--f-body); color: var(--ink); }
+.remedy p { color: var(--ink-2); font-size: .94rem; }
+
+.axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .8rem; }
+.axis { border-top: 2px solid var(--ink); padding-top: .7rem; display: grid; gap: .35rem; align-content: start; min-width: 0; }
+.axis .k { font: 500 .72rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.axis h4 { margin: 0; font: 600 .98rem var(--f-body); }
+.axis p { font-size: .88rem; color: var(--ink-2); }
+.axis p b { color: var(--v-false-fg); font-weight: 600; }
+
+/* timeline case */
+.tl { position: relative; height: 92px; margin: .4rem .5rem 0; }
+.tl-line { position: absolute; left: 0; right: 0; top: 46px; height: 2px; background: var(--rule); }
+.tl-tick { position: absolute; top: 40px; width: 2px; height: 14px; background: var(--muted); transform: translateX(-1px); }
+.tl-yr { position: absolute; top: 60px; font: .72rem var(--f-mono); color: var(--muted); transform: translateX(-50%); }
+.tl-ev { position: absolute; top: 0; transform: translateX(-50%); font: .72rem/1.25 var(--f-body); color: var(--ink-2); text-align: center; width: 9rem; }
+.tl-ev.right { transform: translateX(-85%); text-align: right; }
+.tl-ev.left { transform: translateX(-15%); text-align: left; }
+.tl-dot { position: absolute; top: 40px; width: 14px; height: 14px; border-radius: 50%; transform: translateX(-7px); border: 2px solid var(--surface); }
+.tl-cursor { position: absolute; top: 26px; bottom: 30px; width: 0; border-left: 2px dashed var(--link); transition: left .35s ease; }
+@media (prefers-reduced-motion: reduce) { .tl-cursor { transition: none; } }
+.tl-wrap { overflow-x: auto; }
+.tl-inner { min-width: 520px; }
+
+/* tables */
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 640px; }
+th, td { padding: .6rem .8rem; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font: 500 .72rem/1.3 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); vertical-align: bottom; white-space: normal; }
+thead tr.grp th { border-bottom: 0; padding-bottom: 0; color: var(--accent); }
+tbody tr:last-child td { border-bottom: 0; }
+td { font-family: var(--f-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+td:first-child { font-family: var(--f-body); color: var(--ink); }
+td .sd { color: var(--muted); font-size: .76rem; margin-left: .2rem; }
+td.best { color: var(--ink); font-weight: 600; background: var(--accent-soft); }
+td.second { color: var(--ink); text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+td.gain { color: var(--v-true-fg); }
+
+/* bar charts */
+.chart { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 1.1rem 1.1rem .9rem; }
+.chart-title { font: 600 .95rem var(--f-body); margin-bottom: .2rem; }
+.chart-sub { font-size: .82rem; color: var(--muted); margin-bottom: 1rem; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; font-size: .82rem; color: var(--ink-2); margin-bottom: .9rem; }
+.legend span { display: inline-flex; align-items: center; gap: .4rem; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.bars { display: grid; grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr) 3.4rem; gap: .5rem .8rem; align-items: center; font-size: .84rem; }
+.bars .name { color: var(--ink); }
+.bars .val { font-family: var(--f-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; font-size: .8rem; }
+.track { position: relative; height: 18px; }
+.track .grid { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--rule); }
+.track .ref { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 1.5px dashed var(--muted); }
+.stack { position: relative; display: flex; height: 100%; gap: 2px; }
+.stack > span { height: 100%; min-width: 0; position: relative; }
+.stack > span:first-child { border-radius: 4px 0 0 4px; }
+.stack > span:last-child { border-radius: 0 4px 4px 0; }
+.stack > span:only-child { border-radius: 0 4px 4px 0; }
+.stack > span:hover { filter: brightness(1.12); }
+.axis-row { display: grid; grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr) 3.4rem; gap: .8rem; margin-top: .4rem; }
+.axis-row .scale { position: relative; height: 1rem; font: .7rem var(--f-mono); color: var(--muted); }
+.axis-row .scale span { position: absolute; transform: translateX(-50%); }
+.axis-row .scale span:first-child { transform: none; }
+.axis-row .scale span:last-child { transform: translateX(-100%); }
+.tip { position: fixed; pointer-events: none; z-index: 10; background: var(--ink); color: var(--bg); font: .78rem/1.35 var(--f-body); padding: .4rem .6rem; border-radius: 6px; max-width: 240px; }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+.callout { display: grid; gap: .3rem; padding: 1rem 1.2rem; border-left: 3px solid var(--ink); background: var(--surface); border-radius: 0 8px 8px 0; }
+.callout .big { font: 500 2rem/1 var(--f-display); }
+.callout p { font-size: .9rem; color: var(--ink-2); }
+
+/* alternative view */
+.debate { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.debate > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 1.2rem; display: grid; gap: .7rem; align-content: start; min-width: 0; }
+.debate ol { margin: 0; padding-left: 1.2rem; display: grid; gap: .55rem; color: var(--ink-2); font-size: .92rem; }
+.debate ol b { color: var(--ink); font-weight: 600; }
+
+/* bibtex */
+.bib { position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+.bib pre { margin: 0; padding: 1.1rem 1.2rem; overflow-x: auto; font: .8rem/1.6 var(--f-mono); color: var(--ink-2); }
+.bib .btn { position: absolute; top: .6rem; right: .6rem; padding: .35rem .7rem; font-size: .78rem; }
+footer { padding-top: 2.5rem; font-size: .82rem; color: var(--muted); }
+
+/* Figure 1 at reading size */
+.fig-narrow { max-width: 760px; margin-inline: auto; }
+
+/* Side table of contents: sticky column on wide screens, top bar otherwise */
+.layout { max-width: 1040px; margin-inline: auto; }
+.main { min-width: 0; }
+.side { display: none; }
+@media (min-width: 1180px) {
+  .layout { max-width: 1280px; display: grid; grid-template-columns: 200px minmax(0, 1040px); gap: 40px; justify-content: center; }
+  .side { display: block; }
+  nav.toc { display: none; }
+  .hero-wrap { max-width: 1280px; display: grid; grid-template-columns: 200px minmax(0, 1040px); gap: 40px; justify-content: center; }
+  .hero-wrap > header { grid-column: 2; }
+}
+.sidetoc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 2rem); display: grid; gap: .8rem; padding-top: .3rem; }
+.side-title { font: 500 .72rem/1.2 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.sidetoc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; border-left: 1px solid var(--rule); }
+.sidetoc li.grp { font: 500 .7rem var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: .7rem 0 .25rem .9rem; }
+.sidetoc a { display: flex; gap: .5rem; align-items: baseline; padding: .32rem .6rem .32rem .9rem; margin-left: -1px; border-left: 2px solid transparent; color: var(--ink-2); text-decoration: none; font-size: .85rem; line-height: 1.3; transition: color .15s, border-color .15s, background .15s; }
+.sidetoc li.sub a { padding-left: 1.5rem; }
+.sidetoc a:hover { color: var(--ink); background: var(--surface); }
+.sidetoc a.active { color: var(--ink); border-left-color: var(--accent); font-weight: 500; }
+.sidetoc .sn { font: 500 .72rem var(--f-mono); color: var(--accent); min-width: 1.6rem; }
+.side-progress { height: 2px; background: var(--rule); border-radius: 2px; overflow: hidden; margin-top: .4rem; }
+.side-progress span { display: block; height: 100%; width: 0; background: var(--accent); }
+html { scroll-behavior: smooth; }
+section[id] { scroll-margin-top: 1.5rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .sidetoc a { transition: none; } }
+</style>
+</head>
+<body>
+
+<div class="wrap hero-wrap">
+  <header class="hero">
+    <div class="venue"><b>NeurIPS 2026</b> <span aria-hidden="true">/</span> Position Paper Track</div>
+    <h1>From Claims to <em>Context</em></h1>
+    <p class="sub">Holistic information verification requires contextual signals.</p>
+
+    <div class="authors">
+      <span>Emma Kondrup<sup>1,2</sup></span>
+      <span>Islam Eldifrawi<sup>3,2</sup></span>
+      <span>Tong Wu<sup>1,2</sup></span>
+      <span>Zachary Yang<sup>2</sup></span>
+      <span>Sebastian Sabry<sup>1,2</sup></span>
+      <span>Michael Bronstein<sup>4,5</sup></span>
+      <span>Jean-François Godbout<sup>6,2</sup></span>
+      <span>Reihaneh Rabbany<sup>1,2</sup></span>
+      <span>Shenyang Huang<sup>4</sup></span>
+    </div>
+    <div class="affils">
+      <span><sup>1</sup> McGill University</span>
+      <span><sup>2</sup> Mila – Quebec AI Institute</span>
+      <span><sup>3</sup> Université de Sherbrooke</span>
+      <span><sup>4</sup> University of Oxford</span>
+      <span><sup>5</sup> AITHYRA</span>
+      <span><sup>6</sup> Université de Montréal</span>
+    </div>
+
+    <div class="links">
+      <a class="btn primary" href="https://github.com/ekmpa/context" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></svg>
+        Code &amp; data
+      </a>
+      <a class="btn" href="#cite">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h4v4c0 3-1.5 5-4 6M15 7h4v4c0 3-1.5 5-4 6"/></svg>
+        BibTeX
+      </a>
+    </div>
+  </header>
+</div>
+
+<nav class="toc" aria-label="Sections">
+  <ol>
+    <li><a href="#case">Case file</a></li>
+    <li><a href="#abstract">Abstract</a></li>
+    <li><a href="#signals">Contextual signals</a></li>
+    <li><a href="#experts">Human vs. automated</a></li>
+    <li><a href="#temporal">§3.1 Time</a></li>
+    <li><a href="#source">§3.2 Source</a></li>
+    <li><a href="#conflict">§3.3 Conflict</a></li>
+    <li><a href="#nuance">§3.4 Nuance</a></li>
+    <li><a href="#alternative">Alternative view</a></li>
+    <li><a href="#cite">Cite</a></li>
+  </ol>
+</nav>
+
+<div class="layout">
+  <aside class="side" aria-label="Table of contents">
+    <nav class="sidetoc">
+      <span class="side-title">Contents</span>
+      <ol>
+        <li><a href="#case">Case file</a></li>
+        <li><a href="#abstract">Abstract</a></li>
+        <li><a href="#signals">Contextual signals</a></li>
+        <li><a href="#experts"><span class="sn">§2</span>Human vs. automated</a></li>
+        <li class="grp">§3 Four arguments</li>
+        <li class="sub"><a href="#temporal"><span class="sn">3.1</span>Temporal context</a></li>
+        <li class="sub"><a href="#source"><span class="sn">3.2</span>Source context</a></li>
+        <li class="sub"><a href="#conflict"><span class="sn">3.3</span>Conflicting evidence</a></li>
+        <li class="sub"><a href="#nuance"><span class="sn">3.4</span>Nuanced claims</a></li>
+        <li><a href="#alternative"><span class="sn">§4</span>Alternative view</a></li>
+        <li><a href="#cite">Cite</a></li>
+      </ol>
+      <div class="side-progress" aria-hidden="true"><span id="side-bar"></span></div>
+    </nav>
+  </aside>
+<main class="main">
+
+  <!-- ===== Case file ===== -->
+  <section id="case" style="padding-top:0">
+    <div class="case" id="pope" data-mode="content">
+      <div class="case-top">
+        <span class="eyebrow">Case file · 2016 · Appendix C</span>
+        <div class="seg" role="group" aria-label="Verification mode">
+          <button type="button" id="pope-content" aria-pressed="true" data-mode="content">Content only</button>
+          <button type="button" id="pope-context" aria-pressed="false" data-mode="context">With context</button>
+        </div>
+      </div>
+      <div class="claim">
+        <span class="eyebrow" style="color:var(--muted)">Claim</span>
+        <q>Pope Francis endorsed Donald Trump for President of the United States.</q>
+        <span class="meta">~1M Facebook engagements before the election</span>
+      </div>
+      <div class="evidence">
+        <div class="ev">
+          <div class="src">WTOE5News <span class="stance sup">Supports</span></div>
+          <p class="txt">“Pope Francis Shocks World, Endorses Donald Trump for President, Releases Statement.” Republished with the same headline on Ending the Fed.</p>
+          <div class="ctx in-ctx">
+            <div>Secondary source: reports a statement it attributes to the Vatican</div>
+            <div>Domain registered about two weeks before the story</div>
+            <div>Its own About page calls it “a fantasy news website”</div>
+          </div>
+        </div>
+        <div class="ev">
+          <div class="src">Pope Francis, press conference <span class="stance ref">Refutes</span></div>
+          <p class="txt">“I never say a word about electoral campaigns.” (2 October 2016)</p>
+          <div class="ctx in-ctx">
+            <div>Direct statement from the person the claim is about</div>
+            <div>Published by established outlets</div>
+          </div>
+        </div>
+        <div class="ev">
+          <div class="src">Vatican Press Office <span class="stance sil">No statement</span></div>
+          <p class="txt">No corresponding endorsement appears in Vatican communications. No reputable outlet reported one.</p>
+          <div class="ctx in-ctx">
+            <div>Primary source for any papal endorsement</div>
+            <div>Silence from the primary source is itself evidence</div>
+          </div>
+        </div>
+      </div>
+      <div class="case-out plain-out">
+        <span class="label">Verdict</span>
+        <span class="chip ambig">Conflicting</span>
+        <p>Matched on content alone, one article supports the claim and another refutes it. Both are fluent and on-topic, so text similarity gives no way to choose between them.</p>
+      </div>
+      <div class="case-out ctx-out">
+        <span class="label">Verdict</span>
+        <span class="chip false">False</span>
+        <p>Two contextual moves settle it. The primary source is the Vatican Press Office, which says nothing. The only outlet reporting the endorsement is a two-week-old domain that describes itself as fantasy news.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Abstract ===== -->
+  <section id="abstract">
+    <div class="col prose">
+      <div class="sec-head"><span class="eyebrow">Abstract</span><h2>The claim alone is no longer enough</h2></div>
+      <p class="lede">Generative AI has made coherent, plausible content cheap to produce. That erodes the signals automated fact-checking has relied on, and leaves the field's claim-centric default mis-calibrated for today's online environments.</p>
+      <p>The context around a claim and its retrieved evidence carries information that content alone does not: its <strong>temporal grounding</strong>, its <strong>source attribution</strong>, and its <strong>position within web networks</strong>. Automated systems should consider both the claim and these contextual signals.</p>
+      <p>We develop this position along four arguments. Machine learning methods should account for the temporal nature of verification, which is limited by the evidence available at the moment it happens. Contextual signals are useful for verification broadly, particularly when retrieved evidence supports conflicting judgments, and for detecting varying degrees of verifiability, ambiguity and subjectivity in a claim. We find that such nuanced claims make up considerable proportions of popular benchmarks, and outline considerations for designing and evaluating holistic verification systems.</p>
+    </div>
+    <figure class="fig-narrow" style="margin-top:2.2rem">
+      <div class="fig-paper"><img src="fig1.png" alt="Diagram of the proposed holistic verification pipeline. A user submits a claim to an information verification system. It first asks whether the claim is verifiable. If not, a justification explains why (temporality, subjectivity, or lack of evidence). If so, it asks whether the claim is factual, using content-centric claim evaluation against evidence, and whether it is reliable, using context-aware reasoning over source attribution, track record, web topology, timing and ambiguity. The assessment returns one of several labels: Unverifiable, True, False, Ambiguous, and more." width="1010" height="550"></div>
+      <figcaption><b>Figure 1.</b> The proposed holistic pipeline adds context-aware reasoning over source attribution, track record and temporality to content-centric claim evaluation. The two streams together support more nuanced outcomes than a binary score.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== Signals ===== -->
+  <section id="signals">
+    <div class="col prose">
+      <div class="sec-head"><span class="eyebrow">The position</span><h2>Verify the claim and what surrounds it</h2></div>
+      <p>Rather than focusing on individual claims' factuality, verification systems should incorporate data-driven contextual information around the claim and the retrieved evidence. Current approaches, whether supervised, semi-supervised or unsupervised, mostly rely on signals inside the text. Factuality stays necessary. It is no longer sufficient.</p>
+    </div>
+    <div class="signals">
+      <div class="signal">
+        <svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="12" r="5.5"/><path d="M7 29c1.5-6 5.5-9 10-9s8.5 3 10 9"/></svg>
+        <h3>Source attribution</h3>
+        <p class="q">Who said the claim, and in what context? Who published the supporting or refuting evidence? Primary or secondary? Any conflict of interest?</p>
+      </div>
+      <div class="signal">
+        <svg viewBox="0 0 34 34" aria-hidden="true"><path d="M8 24 17 9l9 15zM8 24l9-4 9 4M17 9v11"/><circle class="sfill" cx="17" cy="9" r="2.6"/><circle class="sfill" cx="8" cy="24" r="2.6"/><circle class="sfill" cx="26" cy="24" r="2.6"/><circle class="sfill" cx="17" cy="20" r="2"/></svg>
+        <h3>Evolving topological context</h3>
+        <p class="q">How have the claim's source and its evidence evolved over time? Who do they cite, who cites them, and how often? Have any been compromised?</p>
+      </div>
+      <div class="signal">
+        <svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="11"/><path d="M17 10v7l5 3"/></svg>
+        <h3>Temporality</h3>
+        <p class="q">When was the claim made, and when was it verified? When was each piece of retrieved evidence published?</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Experts ===== -->
+  <section id="experts">
+    <div class="col prose">
+      <div class="sec-head"><span class="eyebrow">§2 · Automated vs. human verification</span><h2>What professional fact-checkers do differently</h2></div>
+      <p>Expert fact-checkers select claims by public relevance and potential harm, go to primary sources, interrogate each source for credibility and time frame, triangulate, and say plainly what is known and what is uncertain. Automated pipelines diverge at every stage.</p>
+    </div>
+    <figure>
+      <div class="flow-wrap">
+        <div class="flow" role="table" aria-label="Expert versus automated workflow">
+          <div class="rowlab" role="columnheader">Stage</div>
+          <div class="stage" role="columnheader">Claim detection</div>
+          <div class="stage" role="columnheader">Evidence retrieval</div>
+          <div class="stage" role="columnheader">Verdict decision</div>
+          <div class="stage" role="columnheader">Communication</div>
+
+          <div class="rowlab" role="rowheader">Human tasks</div>
+          <div role="cell"><ul><li>Select, filter and prioritize claims</li></ul></div>
+          <div role="cell"><ul><li>Domain research</li><li>Source interrogation</li><li>Primary evidence</li></ul></div>
+          <div role="cell"><ul><li>Temporal weighting</li><li>Triangulation</li></ul></div>
+          <div role="cell"><ul><li>Write explanation</li><li>Cite sources</li><li>Confidence</li></ul></div>
+
+          <div class="rowlab" role="rowheader">Automated methods</div>
+          <div role="cell"><ul><li>Check-worthiness detection</li></ul></div>
+          <div role="cell"><ul><li>Information retrieval</li><li>Relevant evidence</li><li>Secondary sources</li></ul></div>
+          <div role="cell"><ul><li>Veracity prediction</li><li>Evidence alignment</li><li>Classification</li></ul></div>
+          <div role="cell"><ul><li>Explanation generation</li><li>LLM justification</li></ul></div>
+
+          <div class="rowlab" role="rowheader">Lesson</div>
+          <div class="lesson" role="cell"><b>Significance</b><i>vs.</i> <span>statistical ranking</span></div>
+          <div class="lesson" role="cell"><b>Primary &amp; temporal</b><i>vs.</i> <span>secondary &amp; outdated</span></div>
+          <div class="lesson" role="cell"><b>Uncertainty clarified</b><i>vs.</i> <span>over-simplification</span></div>
+          <div class="lesson" role="cell"><b>Traceability</b><i>vs.</i> <span>post-hoc justification</span></div>
+        </div>
+      </div>
+      <figcaption><b>Figure 2.</b> Expert fact-checker workflows compared with automated systems, and the four places where automated approaches systematically differ from expert practice.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== 3.1 Temporal ===== -->
+  <section id="temporal">
+    <div class="arg">
+      <div class="arg-num" aria-hidden="true">3.1</div>
+      <div class="arg-body">
+        <div class="sec-head" style="margin:0"><span class="eyebrow">Argument one</span><h2>Verification is constrained by its temporal context</h2></div>
+        <div class="prose" style="max-width:68ch"><p>The truth of a claim, the evidence used to assess it, and that evidence's reliability all depend on <strong>when</strong> verification happens. We separate four temporal axes. Each has its own failure mode, and a system can fail along one of them while appearing competent overall.</p></div>
+        <div class="axes">
+          <div class="axis"><span class="k">Axis 1</span><h4>Reference time of the claim</h4><p>The moment the claim's truth is anchored to. <b>Failure:</b> aligning evidence to the wrong period and confidently judging a different proposition.</p></div>
+          <div class="axis"><span class="k">Axis 2</span><h4>Retrieval time</h4><p>When evidence is fetched. <b>Failure:</b> rankings favor popularity over recency, so an established article can outrank a newer correction.</p></div>
+          <div class="axis"><span class="k">Axis 3</span><h4>Publication time of evidence</h4><p>When each piece of evidence was written. <b>Failure:</b> weighting outdated and recent evidence equally gives order-dependent, misleading conclusions.</p></div>
+          <div class="axis"><span class="k">Axis 4</span><h4>LLM knowledge cutoff</h4><p>The end of the model's training data. <b>Failure:</b> hallucinated or outdated answers about events past the cutoff.</p></div>
+        </div>
+
+        <div class="case" id="goldfish" data-mode="content">
+          <div class="case-top">
+            <span class="eyebrow">Case file · The eight-second attention span · Appendix D</span>
+            <div class="seg" role="group" aria-label="Year of verification">
+              <button type="button" id="gf-2015" aria-pressed="true" data-mode="content">Verify in 2015</button>
+              <button type="button" id="gf-2017" aria-pressed="false" data-mode="context">Verify in 2017</button>
+            </div>
+          </div>
+          <div class="claim">
+            <span class="eyebrow" style="color:var(--muted)">Claim · 2015</span>
+            <q>Average human attention span fell from 12 seconds in 2000 to 8 seconds by 2013, shorter than a goldfish's.</q>
+          </div>
+          <div class="tl-wrap" style="padding:0 1.1rem">
+            <div class="tl-inner">
+              <div class="tl" aria-hidden="true">
+                <div class="tl-line"></div>
+                <div class="tl-tick" style="left:0%"></div><div class="tl-yr" style="left:2%">2000</div>
+                <div class="tl-tick" style="left:76.5%"></div><div class="tl-yr" style="left:76.5%">2013</div>
+                <div class="tl-tick" style="left:88.2%"></div><div class="tl-yr" style="left:88.2%">2015</div>
+                <div class="tl-tick" style="left:100%"></div><div class="tl-yr" style="left:98%">2017</div>
+                <div class="tl-ev left" style="left:0%">Claimed baseline: 12 s</div>
+                <div class="tl-ev" style="left:72%">Claimed: 8 s</div>
+                <div class="tl-dot" style="left:88.2%;background:var(--v-ambig-fg)"></div>
+                <div class="tl-dot" style="left:100%;background:var(--v-false-fg)"></div>
+                <div class="tl-cursor" id="gf-cursor" style="left:88.2%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="evidence">
+            <div class="ev">
+              <div class="src">Time, New York Times · 2015 <span class="stance sup">Supports</span></div>
+              <p class="txt">Reported within days, attributed to a Microsoft Canada study.</p>
+            </div>
+            <div class="ev in-ctx">
+              <div class="src">BBC investigation · 2017 <span class="stance ref">Refutes</span></div>
+              <p class="txt">The Microsoft report did not measure attention in seconds and did not mention goldfish. The figure came from Statistic Brain, whose sources did not support it.</p>
+            </div>
+            <div class="ev no-ctx" style="border-style:dashed">
+              <div class="src" style="color:var(--muted)">Not yet published</div>
+              <p class="txt" style="color:var(--muted)">The correction does not exist at retrieval time. A 2015 verifier cannot find it.</p>
+            </div>
+          </div>
+          <div class="case-out plain-out">
+            <span class="label">Likely verdict</span>
+            <span class="chip true">True</span>
+            <p>Retrieval in 2015 surfaces only the coverage from established outlets (Axis 2).</p>
+          </div>
+          <div class="case-out ctx-out">
+            <span class="label">Verdict</span>
+            <span class="chip false">False</span>
+            <p>Only if the system weighs the 2017 correction by its publication date instead of treating it as one more vote (Axis 3).</p>
+          </div>
+        </div>
+
+        <div class="col prose" style="margin:0;max-width:68ch"><p><strong>RAG does not resolve temporality.</strong> Retrieval surfaces recent evidence but does not make the model use it correctly. Search augmentation has proven insufficient on fast-changing or false-premise queries, and frontier reasoning models struggle with claims that require reasoning over specific time ranges.</p></div>
+
+        <div class="remedy">
+          <span class="eyebrow">Remedy</span>
+          <h4>Build living fact-checking benchmarks</h4>
+          <p>Benchmarks should reflect a changing world, as LLM evaluation already does with regularly updated sets. Because verdicts evolve, treat labels as revisable. Archive and timestamp claims and evidence, and version releases to keep results reproducible.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3.2 Source ===== -->
+  <section id="source">
+    <div class="arg">
+      <div class="arg-num" aria-hidden="true">3.2</div>
+      <div class="arg-body">
+        <div class="sec-head" style="margin:0"><span class="eyebrow">Argument two</span><h2>Source context complements claim factuality</h2></div>
+        <div class="prose" style="max-width:68ch">
+          <p>We augment a RAG fact-checking pipeline (OpenFactCheck's RARR and FactTool implementations) with two kinds of source context and evaluate on six widely used benchmarks. <strong>Topology</strong> gives the model the domain names of each evidence source's 1- or 2-hop neighbors over three months of the CrediBench webgraphs. <strong>Source attribution</strong> either prompts the model to reason about each source's domain and motives, or supplies a numerical domain-reliability score.</p>
+          <p>Models search the web for up to 5 rounds of 5 documents per query. Results below are for GPT-5 Mini, mean ± std over 5 seeds. Qwen3-1.7B and FactTool results are in Appendix B.</p>
+        </div>
+        <figure>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr class="grp"><th></th><th></th><th colspan="2">Web topology</th><th colspan="2">Source attribution</th><th></th></tr>
+                <tr><th>Dataset</th><th>RAG</th><th>+ 1-hop</th><th>+ 2-hop</th><th>+ Reasoning</th><th>+ Reliability score</th><th>Best gain</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>RUMORS</td><td>0.70<span class="sd">±.02</span></td><td class="best">0.75<span class="sd">±.01</span></td><td class="second">0.72<span class="sd">±.01</span></td><td>0.70<span class="sd">±.04</span></td><td>0.70<span class="sd">±.02</span></td><td class="gain">+0.05</td></tr>
+                <tr><td>LIAR</td><td>0.49<span class="sd">±.02</span></td><td class="second">0.50<span class="sd">±.01</span></td><td class="second">0.50<span class="sd">±.01</span></td><td>0.49<span class="sd">±.01</span></td><td class="best">0.58<span class="sd">±.01</span></td><td class="gain">+0.09</td></tr>
+                <tr><td>ISOT</td><td>0.49<span class="sd">±.02</span></td><td>0.52<span class="sd">±.02</span></td><td class="second">0.53<span class="sd">±.01</span></td><td>0.50<span class="sd">±.01</span></td><td class="best">0.54<span class="sd">±.02</span></td><td class="gain">+0.05</td></tr>
+                <tr><td>ClaimsKG</td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.02</span></td><td class="second">0.47<span class="sd">±.01</span></td><td class="best">0.48<span class="sd">±.01</span></td><td class="gain">+0.02</td></tr>
+                <tr><td>FakeCovid</td><td>0.46<span class="sd">±.03</span></td><td class="best">0.57<span class="sd">±.05</span></td><td class="second">0.53<span class="sd">±.05</span></td><td>0.47<span class="sd">±.02</span></td><td>0.50<span class="sd">±.05</span></td><td class="gain">+0.11</td></tr>
+                <tr><td>Benjamin</td><td>0.63<span class="sd">±.03</span></td><td class="best">0.68<span class="sd">±.04</span></td><td class="second">0.67<span class="sd">±.02</span></td><td>0.63<span class="sd">±.04</span></td><td>0.62<span class="sd">±.04</span></td><td class="gain">+0.05</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <figcaption><b>Table 2.</b> Accuracy of baseline RAG and four context augmentations. Shaded cells are the best per dataset, underlined cells the second best. “Best gain” is the best augmentation minus RAG, in accuracy points.</figcaption>
+        </figure>
+        <div class="prose" style="max-width:68ch">
+          <p><strong>Topology helps on most benchmarks</strong>, with gains of up to 10.7% for GPT-5 Mini and 11.1% for Qwen. 1-hop and 2-hop perform comparably, which suggests most of the gain comes from adding structure at all. <strong>A numerical reliability score improves every dataset except Benjamin</strong> on GPT (up to 8.5%) and every dataset except RUMORS on Qwen (up to 12.4%). Prompted source reasoning is negligible on GPT but strong on Qwen, up to 12.2% on FakeCovid.</p>
+          <p>Source topology also matters because adversaries already exploit it: SEO manipulation and networks such as Pravda push low-quality sites into search rankings and scraping pipelines.</p>
+        </div>
+        <div class="two">
+          <div class="remedy">
+            <span class="eyebrow">Remedy</span>
+            <h4>Use topology-aware methods</h4>
+            <p>Hyperlink structure encodes signals that content cannot recover. Combining graph neural networks or graph transformers with LLM text embeddings is a promising route to multimodal verification.</p>
+          </div>
+          <div class="remedy">
+            <span class="eyebrow">Remedy</span>
+            <h4>Integrate source attribution modules</h4>
+            <p>Attach context reasoning and numerical reliability signals to the retrieved evidence and to the claim itself, as fact-checking practice does. Stronger justifications can also build trust in models.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3.3 Conflict ===== -->
+  <section id="conflict">
+    <div class="arg">
+      <div class="arg-num" aria-hidden="true">3.3</div>
+      <div class="arg-body">
+        <div class="sec-head" style="margin:0"><span class="eyebrow">Argument three</span><h2>Context can help decide which sources to trust under conflict</h2></div>
+        <div class="prose" style="max-width:68ch">
+          <p>Conflicting evidence is common. RARR aggregates predictions made from single pieces of evidence, so we can measure directly how often the retrieved evidence disagrees. In four of the six benchmarks, more than 10% of queries do. Conflicts can be <strong>temporal</strong> (sources from different periods) or <strong>factual</strong> (sources asserting opposite facts). Current LLM-RAG pipelines rank evidence by content relevance and largely ignore credibility. Telling primary from secondary sources, which source context informs, is a first step toward resolving the conflict.</p>
+        </div>
+        <figure class="chart" id="conflict-chart">
+          <div class="chart-title">Queries with conflicting retrieved evidence</div>
+          <div class="chart-sub">Share of queries per benchmark. Dashed line marks 10%.</div>
+          <div class="bars" id="conflict-bars"></div>
+          <div class="axis-row"><span></span><div class="scale" id="conflict-scale"></div><span></span></div>
+          <figcaption style="margin-top:.9rem"><b>Table 4.</b> Rates of conflicting evidence across evaluated datasets (Appendix A.2).</figcaption>
+        </figure>
+        <div class="remedy">
+          <span class="eyebrow">Remedy</span>
+          <h4>Use context-aware conflict resolution modules</h4>
+          <p>Professional fact-checkers accept that concurrent narratives can exist. Automated systems should handle conflicting evidence in principled ways and express the disagreement or uncertainty, using context to arbitrate. The <a href="#case">Pope case file</a> above shows one such resolution.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3.4 Nuance ===== -->
+  <section id="nuance">
+    <div class="arg">
+      <div class="arg-num" aria-hidden="true">3.4</div>
+      <div class="arg-body">
+        <div class="sec-head" style="margin:0"><span class="eyebrow">Argument four</span><h2>Subjectivity on a Spectrum: Nuances are Prevalent in Fact-Checking</h2></div>
+        <div class="prose" style="max-width:68ch">
+          <p>A verifier that strips context can give a confident verdict on a claim that was never fully specified. We audited seven benchmarks with GPT-5 Mini plus web search for three kinds of nuance.</p>
+        </div>
+        <div class="chiprow" style="gap:.6rem 1.4rem">
+          <span style="display:inline-flex;gap:.5rem;align-items:center;font-size:.9rem;color:var(--ink-2)"><span class="chip unv">Unverif.</span> no single justifiable answer</span>
+          <span style="display:inline-flex;gap:.5rem;align-items:center;font-size:.9rem;color:var(--ink-2)"><span class="chip ambig">Ambig.</span> several answers, each justifiable in some context</span>
+          <span style="display:inline-flex;gap:.5rem;align-items:center;font-size:.9rem;color:var(--ink-2)"><span class="chip unv" style="background:transparent">Opinion</span> a subjective judgment, not a fact</span>
+        </div>
+        <figure class="chart">
+          <div class="chart-title">Share of benchmark claims flagged as nuanced</div>
+          <div class="chart-sub">Each bar sums the three categories. Most of these datasets still expect a single correct label.</div>
+          <div class="legend">
+            <span><i style="background:var(--s-unverif)"></i>Unverifiable</span>
+            <span><i style="background:var(--s-ambig)"></i>Ambiguous</span>
+            <span><i style="background:var(--s-opinion)"></i>Opinion</span>
+          </div>
+          <div class="bars" id="nuance-bars"></div>
+          <div class="axis-row"><span></span><div class="scale" id="nuance-scale"></div><span></span></div>
+          <div class="tbl-wrap" style="margin-top:1.1rem">
+            <table>
+              <thead><tr><th>Dataset</th><th>% Unverifiable</th><th>% Ambiguous</th><th>% Opinion</th><th>Claims audited</th></tr></thead>
+              <tbody id="nuance-table"></tbody>
+            </table>
+          </div>
+          <figcaption><b>Table 3.</b> Benchmarks show high and varied rates of nuanced claims, yet most evaluations do not account for them.</figcaption>
+        </figure>
+        <div class="two">
+          <div class="callout"><span class="big num">77.4%</span><p>of LIAR claims are ambiguous, even though each is scored against one correct label.</p></div>
+          <div class="callout"><span class="big num">39–45%</span><p>inter-annotator agreement among five expert annotators labelling 200 claims from LIAR and ClaimsKG. Experts struggle to classify nuance too, though they report similar overall rates (Appendix A.3).</p></div>
+        </div>
+        <div class="remedy">
+          <span class="eyebrow">Remedy</span>
+          <h4>Set comprehensive benchmarking standards</h4>
+          <p>Label claims for verifiability, ambiguity and subjectivity at release, and whenever the benchmark is updated, and timestamp all claims and evidence. Models can then learn to withhold confident verdicts on unverifiable claims, and accuracy can be compared across claim types.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Alternative view ===== -->
+  <section id="alternative">
+    <div class="col prose">
+      <div class="sec-head"><span class="eyebrow">§4 · Alternative view</span><h2>Isn't content-only verification safer?</h2></div>
+      <p>We take the strongest counter-position seriously and answer it point by point.</p>
+    </div>
+    <div class="debate" style="margin-top:1.4rem">
+      <div>
+        <span class="eyebrow" style="color:var(--muted)">The objection</span>
+        <ol>
+          <li><b>Genetic fallacy.</b> Judging claims by provenance risks rejecting true claims from low-reputation sources and accepting false ones from reputable sources.</li>
+          <li><b>Attack surface.</b> Backlinks and citation patterns can be manipulated, as the Pravda network and SEO campaigns show.</li>
+          <li><b>Reproducibility.</b> A content-only verdict is reproducible from the claim and a fixed knowledge base. Context depends on an unstable web.</li>
+          <li><b>Scale.</b> Context needs billion-scale temporal webgraphs, reliability databases and versioned benchmarks.</li>
+        </ol>
+      </div>
+      <div>
+        <span class="eyebrow">Our response</span>
+        <ol>
+          <li><b>Combine signals.</b> Generative models erase the discriminative power of content alone. Triangulating across channels, as experts do, means no single signal decides.</li>
+          <li><b>Coordinated attacks cost more.</b> Gaming content, structure and timing together is far more expensive than gaming any one channel.</li>
+          <li><b>Knowledge bases drift too.</b> The “fixed” baseline is itself a moving target. The answer is explicit versioning and transparent, contestable reliability signals.</li>
+          <li><b>Scale cost to stakes.</b> Shared resources like CrediBench and DomainDemo are spreading the infrastructure cost. Low-stakes uses can run lighter pipelines, while elections and public health justify the full stack.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Cite ===== -->
+  <section id="cite">
+    <div class="col prose">
+      <div class="sec-head"><span class="eyebrow">Citation</span><h2>Cite this work</h2></div>
+    </div>
+    <div class="col bib" style="margin-top:1rem">
+      <button type="button" class="btn" id="copy-bib">Copy</button>
+<pre id="bibtex">@inproceedings{kondrup2026claims,
+  title     = {From Claims to Context: Holistic Information
+               Verification Requires Contextual Signals},
+  author    = {Kondrup, Emma and Eldifrawi, Islam and Wu, Tong and
+               Yang, Zachary and Sabry, Sebastian and Bronstein, Michael and
+               Godbout, Jean-Fran{\c{c}}ois and Rabbany, Reihaneh and
+               Huang, Shenyang},
+  booktitle = {Advances in Neural Information Processing Systems
+               (NeurIPS), Position Paper Track},
+  year      = {2026}
+}</pre>
+    </div>
+    <footer class="col">
+      Code and data pipeline: <a href="https://github.com/ekmpa/context" target="_blank" rel="noopener">github.com/ekmpa/context</a> · Contact: <span class="mono">emma.kondrup@mila.quebec</span>
+    </footer>
+  </section>
+</main>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(function () {
+  // Two-state case files
+  document.querySelectorAll('.case').forEach(function (box) {
+    var btns = box.querySelectorAll('.seg button');
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var mode = b.getAttribute('data-mode');
+        box.setAttribute('data-mode', mode);
+        btns.forEach(function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+        if (box.id === 'goldfish') {
+          document.getElementById('gf-cursor').style.left = mode === 'context' ? '100%' : '88.2%';
+        }
+      });
+    });
+  });
+
+  var tip = document.getElementById('tip');
+  function bindTip(el, text) {
+    el.addEventListener('mousemove', function (e) {
+      tip.textContent = text; tip.hidden = false;
+      var x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+      tip.style.left = x + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+    });
+    el.addEventListener('mouseleave', function () { tip.hidden = true; });
+  }
+  function scale(el, ticks, max, fmt) {
+    ticks.forEach(function (t) {
+      var s = document.createElement('span');
+      s.style.left = (t / max * 100) + '%';
+      s.textContent = fmt(t);
+      el.appendChild(s);
+    });
+  }
+  function grid(track, ticks, max) {
+    ticks.forEach(function (t) {
+      if (t === 0) return;
+      var g = document.createElement('div');
+      g.className = 'grid'; g.style.left = (t / max * 100) + '%';
+      track.appendChild(g);
+    });
+  }
+
+  // Conflict chart (Table 4)
+  var conflict = [['ClaimsKG', 19.67], ['RUMORS', 17.07], ['FakeCovid', 13.48], ['Benjamin', 10.29], ['LIAR', 1.67], ['ISOT', 1.67]];
+  var cMax = 20, cTicks = [0, 5, 10, 15, 20];
+  var cb = document.getElementById('conflict-bars');
+  conflict.forEach(function (r) {
+    var name = document.createElement('span'); name.className = 'name'; name.textContent = r[0];
+    var track = document.createElement('div'); track.className = 'track';
+    grid(track, cTicks, cMax);
+    var ref = document.createElement('div'); ref.className = 'ref'; ref.style.left = '50%'; track.appendChild(ref);
+    var st = document.createElement('div'); st.className = 'stack';
+    var seg = document.createElement('span');
+    seg.style.width = (r[1] / cMax * 100) + '%';
+    seg.style.background = r[1] >= 10 ? 'var(--accent)' : 'var(--muted)';
+    seg.style.borderRadius = '0 4px 4px 0';
+    bindTip(seg, r[0] + ': ' + r[1].toFixed(2) + '% of queries have conflicting evidence');
+    st.appendChild(seg); track.appendChild(st);
+    var val = document.createElement('span'); val.className = 'val'; val.textContent = r[1].toFixed(1) + '%';
+    cb.append(name, track, val);
+  });
+  scale(document.getElementById('conflict-scale'), cTicks, cMax, function (t) { return t + '%'; });
+
+  // Nuance chart (Table 3)
+  var nuance = [
+    ['DeFakts', 6.0, 40.1, 45.2, '3,000'],
+    ['LIAR', 0.2, 77.4, 3.8, '3,000'],
+    ['ClaimsKG', 0.4, 19.9, 4.6, '3,000'],
+    ['RUMORS', 1.5, 14.5, 1.86, '1,021'],
+    ['FakeCovid', 6.8, 0.0, 2.2, '236'],
+    ['ISOT Fake News', 4.4, 0.0, 0.0, '2,000'],
+    ['Benjamin', 3.7, 0.0, 0.0, '326']
+  ];
+  var cats = [['Unverifiable', 'var(--s-unverif)'], ['Ambiguous', 'var(--s-ambig)'], ['Opinion', 'var(--s-opinion)']];
+  var nMax = 100, nTicks = [0, 25, 50, 75, 100];
+  var nb = document.getElementById('nuance-bars');
+  var tb = document.getElementById('nuance-table');
+  nuance.forEach(function (r) {
+    var total = r[1] + r[2] + r[3];
+    var name = document.createElement('span'); name.className = 'name'; name.textContent = r[0];
+    var track = document.createElement('div'); track.className = 'track';
+    grid(track, nTicks, nMax);
+    var st = document.createElement('div'); st.className = 'stack';
+    cats.forEach(function (c, i) {
+      var v = r[i + 1];
+      if (v <= 0) return;
+      var seg = document.createElement('span');
+      seg.style.width = (v / nMax * 100) + '%';
+      seg.style.background = c[1];
+      bindTip(seg, r[0] + ' · ' + c[0] + ': ' + v + '%');
+      st.appendChild(seg);
+    });
+    track.appendChild(st);
+    var val = document.createElement('span'); val.className = 'val'; val.textContent = total.toFixed(1) + '%';
+    nb.append(name, track, val);
+
+    var tr = document.createElement('tr');
+    [r[0], r[1].toFixed(1), r[2].toFixed(1), r[3].toFixed(1), r[4]].forEach(function (c) {
+      var td = document.createElement('td'); td.textContent = c; tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  scale(document.getElementById('nuance-scale'), nTicks, nMax, function (t) { return t + '%'; });
+
+  // Copy BibTeX
+  var copyBtn = document.getElementById('copy-bib');
+  copyBtn.addEventListener('click', function () {
+    var text = document.getElementById('bibtex').textContent;
+    function selectIt() {
+      var r = document.createRange(); r.selectNodeContents(document.getElementById('bibtex'));
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      copyBtn.textContent = 'Selected, press ⌘C';
+    }
+    try {
+      navigator.clipboard.writeText(text).then(function () {
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1800);
+      }, selectIt);
+    } catch (e) { selectIt(); }
+  });
+
+  // Side TOC: highlight the section being read
+  var links = Array.prototype.slice.call(document.querySelectorAll('.sidetoc a'));
+  var secs = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  var bar = document.getElementById('side-bar');
+  function spy() {
+    var y = window.innerHeight * 0.3, cur = 0;
+    secs.forEach(function (sec, i) { if (sec && sec.getBoundingClientRect().top <= y) cur = i; });
+    links.forEach(function (a, i) { a.classList.toggle('active', i === cur); });
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (h > 0 ? Math.min(100, window.scrollY / h * 100) : 0) + '%';
+  }
+  window.addEventListener('scroll', spy, { passive: true });
+  window.addEventListener('resize', spy);
+  spy();
+})();
+</script>
+
+</body>
+</html>
