@@ -606,16 +606,16 @@ section[id] { scroll-margin-top: 1.5rem; }
                 <tr><th>Dataset</th><th>RAG</th><th>+ 1-hop</th><th>+ 2-hop</th><th>+ Reasoning</th><th>+ Reliability score</th><th>Best gain</th></tr>
               </thead>
               <tbody>
-                <tr><td>RUMORS</td><td>0.70<span class="sd">±.02</span></td><td class="best">0.75<span class="sd">±.01</span></td><td class="second">0.72<span class="sd">±.01</span></td><td>0.70<span class="sd">±.04</span></td><td>0.70<span class="sd">±.02</span></td><td class="gain">+0.05</td></tr>
-                <tr><td>LIAR</td><td>0.49<span class="sd">±.02</span></td><td class="second">0.50<span class="sd">±.01</span></td><td class="second">0.50<span class="sd">±.01</span></td><td>0.49<span class="sd">±.01</span></td><td class="best">0.58<span class="sd">±.01</span></td><td class="gain">+0.09</td></tr>
-                <tr><td>ISOT</td><td>0.49<span class="sd">±.02</span></td><td>0.52<span class="sd">±.02</span></td><td class="second">0.53<span class="sd">±.01</span></td><td>0.50<span class="sd">±.01</span></td><td class="best">0.54<span class="sd">±.02</span></td><td class="gain">+0.05</td></tr>
-                <tr><td>ClaimsKG</td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.02</span></td><td class="second">0.47<span class="sd">±.01</span></td><td class="best">0.48<span class="sd">±.01</span></td><td class="gain">+0.02</td></tr>
-                <tr><td>FakeCovid</td><td>0.46<span class="sd">±.03</span></td><td class="best">0.57<span class="sd">±.05</span></td><td class="second">0.53<span class="sd">±.05</span></td><td>0.47<span class="sd">±.02</span></td><td>0.50<span class="sd">±.05</span></td><td class="gain">+0.11</td></tr>
-                <tr><td>Benjamin</td><td>0.63<span class="sd">±.03</span></td><td class="best">0.68<span class="sd">±.04</span></td><td class="second">0.67<span class="sd">±.02</span></td><td>0.63<span class="sd">±.04</span></td><td>0.62<span class="sd">±.04</span></td><td class="gain">+0.05</td></tr>
+                <tr><td>RUMORS</td><td>0.70<span class="sd">±.02</span></td><td class="best">0.75<span class="sd">±.01</span></td><td class="second">0.72<span class="sd">±.01</span></td><td>0.70<span class="sd">±.04</span></td><td>0.70<span class="sd">±.02</span></td><td class="gain">+5%</td></tr>
+                <tr><td>LIAR</td><td>0.49<span class="sd">±.02</span></td><td class="second">0.50<span class="sd">±.01</span></td><td class="second">0.50<span class="sd">±.01</span></td><td>0.49<span class="sd">±.01</span></td><td class="best">0.58<span class="sd">±.01</span></td><td class="gain">+9%</td></tr>
+                <tr><td>ISOT</td><td>0.49<span class="sd">±.02</span></td><td>0.52<span class="sd">±.02</span></td><td class="second">0.53<span class="sd">±.01</span></td><td>0.50<span class="sd">±.01</span></td><td class="best">0.54<span class="sd">±.02</span></td><td class="gain">+5%</td></tr>
+                <tr><td>ClaimsKG</td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.01</span></td><td>0.46<span class="sd">±.02</span></td><td class="second">0.47<span class="sd">±.01</span></td><td class="best">0.48<span class="sd">±.01</span></td><td class="gain">+2%</td></tr>
+                <tr><td>FakeCovid</td><td>0.46<span class="sd">±.03</span></td><td class="best">0.57<span class="sd">±.05</span></td><td class="second">0.53<span class="sd">±.05</span></td><td>0.47<span class="sd">±.02</span></td><td>0.50<span class="sd">±.05</span></td><td class="gain">+11%</td></tr>
+                <tr><td>Benjamin</td><td>0.63<span class="sd">±.03</span></td><td class="best">0.68<span class="sd">±.04</span></td><td class="second">0.67<span class="sd">±.02</span></td><td>0.63<span class="sd">±.04</span></td><td>0.62<span class="sd">±.04</span></td><td class="gain">+5%</td></tr>
               </tbody>
             </table>
           </div>
-          <figcaption><b>Table 2.</b> Accuracy of baseline RAG and four context augmentations. Shaded cells are the best per dataset, underlined cells the second best. “Best gain” is the best augmentation minus RAG, in accuracy points.</figcaption>
+          <figcaption><b>Table 2.</b> Accuracy of baseline RAG and four context augmentations. Shaded cells are the best per dataset, underlined cells the second best. “Best gain” is the best augmentation’s accuracy minus RAG’s, in percentage points.</figcaption>
         </figure>
         <div class="prose" style="max-width:68ch">
           <p><strong>Topology helps on most benchmarks</strong>, with gains of up to 10.7% for GPT-5 Mini and 11.1% for Qwen. 1-hop and 2-hop perform comparably, which suggests most of the gain comes from adding structure at all. <strong>A numerical reliability score improves every dataset except Benjamin</strong> on GPT (up to 8.5%) and every dataset except RUMORS on Qwen (up to 12.4%). Prompted source reasoning is negligible on GPT but strong on Qwen, up to 12.2% on FakeCovid.</p>
@@ -687,8 +687,8 @@ section[id] { scroll-margin-top: 1.5rem; }
           <div class="bars" id="nuance-bars"></div>
           <div class="axis-row"><span></span><div class="scale" id="nuance-scale"></div><span></span></div>
           <div class="tbl-wrap" style="margin-top:1.1rem">
-            <table>
-              <thead><tr><th>Dataset</th><th>% Unverifiable</th><th>% Ambiguous</th><th>% Opinion</th><th>Claims audited</th></tr></thead>
+            <table style="min-width:480px">
+              <thead><tr><th>Dataset</th><th>% Unverifiable</th><th>% Ambiguous</th><th>% Opinion</th></tr></thead>
               <tbody id="nuance-table"></tbody>
             </table>
           </div>
@@ -861,7 +861,7 @@ section[id] { scroll-margin-top: 1.5rem; }
     nb.append(name, track, val);
 
     var tr = document.createElement('tr');
-    [r[0], r[1].toFixed(1), r[2].toFixed(1), r[3].toFixed(1), r[4]].forEach(function (c) {
+    [r[0], r[1].toFixed(1), r[2].toFixed(1), r[3].toFixed(1)].forEach(function (c) {
       var td = document.createElement('td'); td.textContent = c; tr.appendChild(td);
     });
     tb.appendChild(tr);
